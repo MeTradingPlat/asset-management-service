@@ -14,4 +14,6 @@ public interface ActivoRepositoryInt extends JpaRepository<ActivoEntity, Long> {
     List<ActivoEntity> findByIdEscaner(Long idEscaner);
 
     Optional<ActivoEntity> findBySymbolAndIdEscaner(String symbol, Long idEscaner);
+
+    void deleteByIdEscaner(Long idEscaner);
 }

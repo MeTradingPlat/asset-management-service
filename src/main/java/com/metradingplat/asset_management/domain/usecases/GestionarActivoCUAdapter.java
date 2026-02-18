@@ -81,4 +81,10 @@ public class GestionarActivoCUAdapter implements GestionarActivoCUIntPort {
         }
         return this.objGestionarActivoGatewayIntPort.obtenerPorId(idActivo);
     }
+
+    @Override
+    public void eliminarActivosPorEscaner(Long idEscaner) {
+        log.info("Eliminando activos del escaner {}", idEscaner);
+        this.objGestionarActivoGatewayIntPort.eliminarPorIdEscaner(idEscaner);
+    }
 }

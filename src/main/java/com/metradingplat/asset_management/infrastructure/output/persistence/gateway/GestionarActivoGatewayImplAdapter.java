@@ -62,4 +62,10 @@ public class GestionarActivoGatewayImplAdapter implements GestionarActivoGateway
         return this.objActivoRepository.findBySymbolAndIdEscaner(symbol, idEscaner)
                 .map(this.objMapper::mappearDeEntityAActivo);
     }
+
+    @Override
+    @Transactional
+    public void eliminarPorIdEscaner(Long idEscaner) {
+        this.objActivoRepository.deleteByIdEscaner(idEscaner);
+    }
 }

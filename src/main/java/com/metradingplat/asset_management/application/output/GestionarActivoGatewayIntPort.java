@@ -17,4 +17,6 @@ public interface GestionarActivoGatewayIntPort {
     Boolean existePorId(Long idActivo);
 
     Optional<Activo> buscarPorSymbolYEscaner(String symbol, Long idEscaner);
+
+    void eliminarPorIdEscaner(Long idEscaner);
 }

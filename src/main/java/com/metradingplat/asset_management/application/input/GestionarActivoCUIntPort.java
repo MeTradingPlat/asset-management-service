@@ -14,4 +14,6 @@ public interface GestionarActivoCUIntPort {
     List<Activo> listar();
 
     Activo obtenerPorId(Long idActivo);
+
+    void eliminarActivosPorEscaner(Long idEscaner);
 }
