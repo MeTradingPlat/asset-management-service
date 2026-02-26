@@ -24,10 +24,12 @@ jobs:
               --name "postgres-activos" \
               --network "metradingplat-network" \
               --restart "always" \
+              --memory "256m" \
+              --memory-swap "256m" \
               -e POSTGRES_DB="bd_activos" \
               -e POSTGRES_USER="user_activos" \
               -e POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
-              -p 5435:5432 \
+              -p 127.0.0.1:5435:5432 \
               -v postgres_activos_data:/var/lib/postgresql/data \
               postgres:15-alpine
           else
@@ -61,10 +63,12 @@ jobs:
       - name: Run Application Container
         run: |
           docker run -d \
-            -p 8083:8083 \
+            -p 127.0.0.1:8083:8083 \
             --name "asset-management-service" \
             --network "metradingplat-network" \
             --restart "unless-stopped" \
+            --memory "320m" \
+            --memory-swap "320m" \
             --label project="metradingplat" \
             --label service="asset-management-service" \
             -e SPRING_PROFILES_ACTIVE="prod" \
