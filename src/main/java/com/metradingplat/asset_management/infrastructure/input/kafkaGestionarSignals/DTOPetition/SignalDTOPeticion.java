@@ -2,6 +2,8 @@ package com.metradingplat.asset_management.infrastructure.input.kafkaGestionarSi
 
 import java.time.LocalDateTime;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -11,6 +13,7 @@ import lombok.Setter;
 @Setter
 @AllArgsConstructor
 @NoArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class SignalDTOPeticion {
     private Long idEscaner;
     private String nombreEscaner;
