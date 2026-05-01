@@ -29,7 +29,6 @@ jobs:
               -e POSTGRES_DB="bd_activos" \
               -e POSTGRES_USER="user_activos" \
               -e POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
-              -p 127.0.0.1:5435:5432 \
               -v postgres_activos_data:/var/lib/postgresql/data \
               postgres:15-alpine
           else
@@ -63,7 +62,6 @@ jobs:
       - name: Run Application Container
         run: |
           docker run -d \
-            -p 127.0.0.1:8083:8083 \
             --name "asset-management-service" \
             --network "metradingplat-network" \
             --restart "unless-stopped" \
