@@ -20,7 +20,7 @@ import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
 
 @RestController
-@RequestMapping("/api/activos")
+@RequestMapping("/activos")
 @RequiredArgsConstructor
 @Validated
 public class ActivoRestController {
