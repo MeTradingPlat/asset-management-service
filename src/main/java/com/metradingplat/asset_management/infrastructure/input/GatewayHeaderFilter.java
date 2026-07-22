@@ -25,6 +25,12 @@ public class GatewayHeaderFilter extends OncePerRequestFilter {
             @NonNull FilterChain filterChain)
             throws ServletException, IOException {
 
+        String path = request.getRequestURI();
+        if (path.startsWith("/actuator") || path.startsWith("/eureka")) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
         String header = request.getHeader("X-Gateway-Passed");
 
         if (header == null || !header.equals("true")) {
