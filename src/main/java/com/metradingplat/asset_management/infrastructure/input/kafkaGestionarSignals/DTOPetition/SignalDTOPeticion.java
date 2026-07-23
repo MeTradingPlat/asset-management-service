@@ -15,6 +15,7 @@ import lombok.Setter;
 @NoArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class SignalDTOPeticion {
+    private String type;
     private Long idEscaner;
     private String nombreEscaner;
     private String symbol;

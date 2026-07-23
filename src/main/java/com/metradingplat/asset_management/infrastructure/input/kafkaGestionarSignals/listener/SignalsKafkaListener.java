@@ -21,6 +21,11 @@ public class SignalsKafkaListener {
 
     @KafkaListener(topics = "signals", groupId = "activos-group")
     public void recibirSenal(SignalDTOPeticion command) {
+        if ("CLEAR_SCANNER_SIGNALS".equals(command.getType()) && command.getIdEscaner() != null) {
+            log.info("Clearing assets for scanner {}", command.getIdEscaner());
+            this.objGestionarActivoCUInt.eliminarActivosPorEscaner(command.getIdEscaner());
+            return;
+        }
         log.info("Recibida senal para symbol: {}, escaner: {}, tipo: {}", command.getSymbol(),
                 command.getIdEscaner(), command.getTipoSenal());
         Activo objActivo = this.objMapper.deDTOADominio(command);
