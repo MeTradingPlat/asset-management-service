@@ -74,14 +74,22 @@ class Scheduler:
         logger.info("Scheduler steady-state tick: due=%d processed=%d", len(steady_state), processed)
 
     def _process_rows(self, rows: list[DueRow], is_backfill: bool) -> int:
+        # Confirmado en vivo: Alpaca no limita simbolos/llamada, solo 10,000
+        # filas/pagina. Backfill (7 anios de D1) agota esas filas con ~10-12
+        # simbolos sin importar el tamano del lote pedido -- lote grande no
+        # ayuda ahi. Refresco incremental (3 dias) cabe completo en una sola
+        # pagina hasta con 1500 simbolos -- lote grande reduce las llamadas
+        # necesarias en un orden de magnitud.
+        batch_size = settings.alpaca_symbols_per_call_backfill if is_backfill \
+            else settings.alpaca_symbols_per_call_steady_state
         processed = 0
         rows_sorted = sorted(rows, key=lambda r: r.timeframe)
         for timeframe, group in groupby(rows_sorted, key=lambda r: r.timeframe):
             group_rows = list(group)
-            for i in range(0, len(group_rows), settings.alpaca_symbols_per_call):
+            for i in range(0, len(group_rows), batch_size):
                 if self._stop.is_set():
                     return processed
-                batch = group_rows[i:i + settings.alpaca_symbols_per_call]
+                batch = group_rows[i:i + batch_size]
                 self._fetch_and_write_batch(batch, timeframe, is_backfill)
                 processed += len(batch)
         return processed
