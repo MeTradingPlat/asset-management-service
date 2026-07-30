@@ -7,14 +7,19 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# marketdata-service espera codigos MIC, no el nombre de mercado tal cual
-# (mismo mapeo _MERCADO_TO_MIC que signal-processing-service -- solo NYSE y
-# NASDAQ dejaba fuera ~4400 simbolos de AMEX/ETF/OTC que si estan en DxLink).
+# marketdata-service espera codigos MIC, no el nombre de mercado tal cual.
+# BATS (CBOE BZX, ~1560 ETFs) faltaba aca -- no esta en el _MERCADO_TO_MIC de
+# signal-processing-service (ese solo cubre los mercados que el usuario puede
+# elegir como filtro de escaner), pero SI esta reconocido por
+# EquitiesUniverseProvider/MetadataController en marketdata-service. Sin el,
+# se quedaban ~1560 simbolos reales sin rastrear (confirmado en vivo: la suma
+# de los 6 mercados da 13,151, cuadra con el total esperado de TastyTrade).
 _MARKETS = {
     "NYSE": "XNYS",
     "NASDAQ": "XNAS",
     "AMEX": "XASE",
     "ETF": "ARCX",
+    "BATS": "BATS",
     "OTC": "OTC",
 }
 
