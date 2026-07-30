@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import urllib.request
 
 from app.config import settings
@@ -17,6 +18,12 @@ _MARKETS = {
     "OTC": "OTC",
 }
 
+# Simbolos de prueba emitidos por las bolsas para verificar feeds de datos
+# (ATEST/CTEST/NTEST/PTEST y sus sufijos /A, /B...) -- no son instrumentos
+# reales, Alpaca no tiene datos para ellos ni con notacion de punto
+# (confirmado en vivo). Se excluyen aca para no gastar llamadas rastreandolos.
+_TEST_SYMBOL_RE = re.compile(r"^[A-Z]TEST(/|$)")
+
 
 class MarketdataClient:
     def fetch_symbols(self) -> dict[str, str]:
@@ -25,15 +32,11 @@ class MarketdataClient:
         el gateway ni JWT (llamada interna entre contenedores). La respuesta
         es una lista de objetos {"symbol": ..., ...}, no de strings sueltos.
 
-        Simbolos con "/" (acciones de clase "BIO/B", warrants "/WS",
-        unidades "/U", derechos "/R") se excluyen aca -- Alpaca los rechaza
-        con 400 "invalid symbol", y confirmado en vivo que UN SOLO simbolo
-        invalido en un lote de varios simbolos tumba la respuesta ENTERA
-        (ni siquiera los simbolos validos del mismo lote se salvan). No
-        vale la pena rastrearlos: no hay forma de traer su historial desde
-        Alpaca. Al no aparecer aca, el mecanismo de "deslistado" ya
-        existente en SymbolPoller los marca is_active=false solo si ya
-        estaban rastreados de antes."""
+        Los simbolos con "/" (acciones de clase "BRK/B", warrants "/WS",
+        unidades "/U") SI se rastrean -- Alpaca los sirve bien, solo hay que
+        pedirlos con "." en vez de "/" (confirmado en vivo: BRK.B, GME.WS,
+        RAC.U devuelven datos; la traduccion pasa a AlpacaClient, aca se
+        guarda el simbolo tal cual lo entrega marketdata-service)."""
         result: dict[str, str] = {}
         for market, mic in _MARKETS.items():
             req = urllib.request.Request(
@@ -45,7 +48,7 @@ class MarketdataClient:
                     entries = json.loads(resp.read())
                 for entry in entries:
                     symbol = entry["symbol"]
-                    if "/" in symbol:
+                    if _TEST_SYMBOL_RE.match(symbol):
                         continue
                     result[symbol] = market
             except Exception as e:

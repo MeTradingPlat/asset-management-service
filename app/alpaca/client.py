@@ -27,7 +27,14 @@ class AlpacaClient:
         que el rate limiter se consulta POR PAGINA (no una vez por lote) --
         una respuesta grande paginada igual respeta las 200 llamadas/min.
         Alpaca no soporta D2/D3 -- eso se deriva de D1 en otro lado
-        (domain/aggregation.py), nunca se pide aca."""
+        (domain/aggregation.py), nunca se pide aca.
+
+        Acciones de clase/warrants/units usan "/" en marketdata-service pero
+        Alpaca solo los acepta con "." (confirmado en vivo: BRK/B falla,
+        BRK.B funciona) -- se traduce aca en ambas direcciones para que el
+        resto del sistema siga usando "/" de forma consistente."""
+        alpaca_symbols = [sym.replace("/", ".") for sym in symbols]
+        to_original = dict(zip(alpaca_symbols, symbols))
         result: dict[str, list[Bar]] = {sym: [] for sym in symbols}
         page_token = None
         tf = alpaca_native_string(timeframe)
@@ -36,7 +43,7 @@ class AlpacaClient:
             while not self._rate_limiter.try_acquire():
                 time.sleep(0.5)
             params = {
-                "symbols": ",".join(symbols),
+                "symbols": ",".join(alpaca_symbols),
                 "timeframe": tf,
                 "start": start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "end": end.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
