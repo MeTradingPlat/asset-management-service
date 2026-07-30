@@ -1,25 +1,29 @@
-name: CI Metradingplat Gestion Activos
+name: CI Historical Data Service
 
 on:
   push:
     branches: ["master"]
 
 jobs:
-  build:
+  test-and-build:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: "21"
-          distribution: "temurin"
-          cache: "maven"
+      - name: Build test image
+        run: docker build --target test -t historical-data-service:test .
 
-      - name: Build with Maven
-        run: mvn clean package -DskipTests
+      - name: Run unit tests
+        run: docker run --rm historical-data-service:test pytest -m "not integration" --tb=short -q
+
+      - name: Run integration tests (Alpaca real)
+        run: |
+          docker run --rm --network host \
+            -e HD_ALPACA_API_KEY=${{ secrets.HD_ALPACA_API_KEY }} \
+            -e HD_ALPACA_API_SECRET=${{ secrets.HD_ALPACA_API_SECRET }} \
+            historical-data-service:test pytest -m "integration" -v -s --tb=short
+        continue-on-error: true
 
       - name: Login Dockerhub
         env:
@@ -27,7 +31,7 @@ jobs:
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
         run: echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
 
-      - name: Build and push Docker image
+      - name: Build and push production image
         run: |
-          docker build -t virtud142/metradingplat_asset_management_service:latest .
-          docker push virtud142/metradingplat_asset_management_service:latest
+          docker build --target production -t virtud142/metradingplat_historical_data_service:latest .
+          docker push virtud142/metradingplat_historical_data_service:latest
