@@ -15,57 +15,72 @@ _BACKFILL_START = datetime(2018, 1, 1, tzinfo=timezone.utc)  # ~7+ anios atras, 
 
 
 class Scheduler:
+    """Backfill y refresco incremental corren en DOS HILOS INDEPENDIENTES,
+    no uno detras del otro -- un backfill de velas de minuto (7 anios,
+    muchisimas paginas de Alpaca) puede tardar mucho por tick, y si
+    compartiera el mismo hilo secuencial con el refresco incremental, este
+    ultimo se quedaria sin correr mientras tanto -- exactamente el hueco de
+    datos que se queria evitar para timeframes de minutos. Ambos comparten
+    el mismo rate limiter (thread-safe) para que el total combinado nunca
+    pase las llamadas/min de Alpaca, sin importar cual de los dos este mas
+    activo en un momento dado."""
+
     def __init__(self):
-        # Un solo rate limiter compartido entre backfill y refresco
-        # incremental -- el reparto de presupuesto entre los dos es solo
-        # cuantos SIMBOLOS se procesan por tick de cada lado, la cuenta real
-        # de llamadas/min vive en un solo lugar (AlpacaClient).
         self._rate_limiter = TokenBucket()
         self._alpaca = AlpacaClient(self._rate_limiter)
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._backfill_thread: threading.Thread | None = None
+        self._steady_state_thread: threading.Thread | None = None
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._run, name="hd-scheduler", daemon=True)
-        self._thread.start()
+        self._backfill_thread = threading.Thread(
+            target=self._run_loop, args=("backfill",), name="hd-scheduler-backfill", daemon=True,
+        )
+        self._steady_state_thread = threading.Thread(
+            target=self._run_loop, args=("steady_state",), name="hd-scheduler-steady-state", daemon=True,
+        )
+        self._backfill_thread.start()
+        self._steady_state_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
+        for t in (self._backfill_thread, self._steady_state_thread):
+            if t:
+                t.join(timeout=5)
 
-    def _run(self) -> None:
+    def _run_loop(self, kind: str) -> None:
         while not self._stop.is_set():
             try:
-                self.tick()
+                if kind == "backfill":
+                    self._tick_backfill()
+                else:
+                    self._tick_steady_state()
             except Exception as e:
-                logger.error("Scheduler tick failed: %s", e)
+                logger.error("Scheduler (%s) tick failed: %s", kind, e)
             self._stop.wait(settings.scheduler_tick_seconds)
 
-    def tick(self) -> None:
-        backfill, steady_state = fetch_due_rows()
-        if not backfill and not steady_state:
+    def _tick_backfill(self) -> None:
+        backfill, _ = fetch_due_rows()
+        if not backfill:
             return
+        processed = self._process_rows(backfill, is_backfill=True)
+        logger.info("Scheduler backfill tick: due=%d processed=%d", len(backfill), processed)
 
-        backfill_slots = int(settings.alpaca_symbols_per_call * 4 * settings.backfill_call_budget_fraction)
-        steady_slots = int(settings.alpaca_symbols_per_call * 4 * (1 - settings.backfill_call_budget_fraction))
-
-        processed_backfill = self._process_rows(backfill[:backfill_slots], is_backfill=True)
-        processed_steady = self._process_rows(steady_state[:steady_slots], is_backfill=False)
-
-        logger.info(
-            "Scheduler tick: backfill due=%d processed=%d, steady-state due=%d processed=%d",
-            len(backfill), processed_backfill, len(steady_state), processed_steady,
-        )
+    def _tick_steady_state(self) -> None:
+        _, steady_state = fetch_due_rows()
+        if not steady_state:
+            return
+        processed = self._process_rows(steady_state, is_backfill=False)
+        logger.info("Scheduler steady-state tick: due=%d processed=%d", len(steady_state), processed)
 
     def _process_rows(self, rows: list[DueRow], is_backfill: bool) -> int:
-        if not rows:
-            return 0
         processed = 0
         rows_sorted = sorted(rows, key=lambda r: r.timeframe)
         for timeframe, group in groupby(rows_sorted, key=lambda r: r.timeframe):
             group_rows = list(group)
             for i in range(0, len(group_rows), settings.alpaca_symbols_per_call):
+                if self._stop.is_set():
+                    return processed
                 batch = group_rows[i:i + settings.alpaca_symbols_per_call]
                 self._fetch_and_write_batch(batch, timeframe, is_backfill)
                 processed += len(batch)

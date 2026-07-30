@@ -7,8 +7,15 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # marketdata-service espera codigos MIC, no el nombre de mercado tal cual
-# (mismo mapeo que _MERCADO_TO_MIC en signal-processing-service).
-_MARKETS = {"NYSE": "XNYS", "NASDAQ": "XNAS"}
+# (mismo mapeo _MERCADO_TO_MIC que signal-processing-service -- solo NYSE y
+# NASDAQ dejaba fuera ~4400 simbolos de AMEX/ETF/OTC que si estan en DxLink).
+_MARKETS = {
+    "NYSE": "XNYS",
+    "NASDAQ": "XNAS",
+    "AMEX": "XASE",
+    "ETF": "ARCX",
+    "OTC": "OTC",
+}
 
 
 class MarketdataClient:
