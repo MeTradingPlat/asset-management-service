@@ -28,7 +28,7 @@ jobs:
               --memory-swap "768m" \
               -e POSTGRES_DB="bd_historical" \
               -e POSTGRES_USER="user_historical" \
-              -e POSTGRES_PASSWORD="${{ secrets.HD_DB_PASSWORD }}" \
+              -e POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
               -v postgres_historical_data:/var/lib/postgresql/data \
               postgres:15-alpine
           else
@@ -67,7 +67,7 @@ jobs:
             -e HD_DB_PORT="5432" \
             -e HD_DB_NAME="bd_historical" \
             -e HD_DB_USER="user_historical" \
-            -e HD_DB_PASSWORD="${{ secrets.HD_DB_PASSWORD }}" \
+            -e HD_DB_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
             -e HD_ALPACA_API_KEY="${{ secrets.HD_ALPACA_API_KEY }}" \
             -e HD_ALPACA_API_SECRET="${{ secrets.HD_ALPACA_API_SECRET }}" \
             -e HD_MARKETDATA_URL="http://marketdata-service:8082" \
