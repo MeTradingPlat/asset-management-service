@@ -51,9 +51,9 @@ def test_derived_timeframes_excluded_from_due_list():
 
 
 def test_stale_watermark_goes_to_steady_state():
-    # M1: ventana viva = 500 * 1min = 500min; 2/3 de eso = ~333min. Con
-    # last_ingested_at de hace 400 minutos, ya deberia estar due.
-    stale = datetime.now(timezone.utc) - timedelta(minutes=400)
+    # M1: ventana DxLink = 1 dia, umbral = min(1dia*2/3, 1dia) = 16h. Con
+    # last_ingested_at de hace 17 horas, ya deberia estar due.
+    stale = datetime.now(timezone.utc) - timedelta(hours=17)
     rows = [(1, "AAPL", "M1", True, None, stale)]
     with patch("app.ingestion.watermark_repository.get_connection", lambda: _fake_get_connection(rows)):
         backfill, steady = fetch_due_rows()
@@ -67,3 +67,15 @@ def test_fresh_watermark_not_due():
     with patch("app.ingestion.watermark_repository.get_connection", lambda: _fake_get_connection(rows)):
         backfill, steady = fetch_due_rows()
     assert backfill == [] and steady == []
+
+
+def test_daily_and_hourly_timeframes_still_refresh_at_least_once_a_day():
+    # D1/H1 tienen ventana DxLink mucho mas larga (285 dias / "todo el
+    # historico"), pero el umbral se limita a 1 dia como maximo para que el
+    # archivo nunca se quede desactualizado por mucho tiempo.
+    stale = datetime.now(timezone.utc) - timedelta(hours=25)
+    rows = [(1, "AAPL", "D1", True, None, stale), (2, "MSFT", "H1", True, None, stale)]
+    with patch("app.ingestion.watermark_repository.get_connection", lambda: _fake_get_connection(rows)):
+        backfill, steady = fetch_due_rows()
+    assert backfill == []
+    assert {r.symbol for r in steady} == {"AAPL", "MSFT"}

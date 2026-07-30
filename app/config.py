@@ -20,8 +20,6 @@ class Settings(BaseSettings):
     alpaca_symbols_per_call: int = 100
 
     scheduler_tick_seconds: int = 30
-    dxlink_live_bar_count: int = 500
-    backfill_call_budget_fraction: float = 0.5
 
     log_level: str = "INFO"
 

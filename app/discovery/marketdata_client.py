@@ -23,7 +23,17 @@ class MarketdataClient:
         """Devuelve {symbol: market}. Mismo patron directo-por-DNS con header
         X-Gateway-Passed que ya usa signal-processing-service, sin pasar por
         el gateway ni JWT (llamada interna entre contenedores). La respuesta
-        es una lista de objetos {"symbol": ..., ...}, no de strings sueltos."""
+        es una lista de objetos {"symbol": ..., ...}, no de strings sueltos.
+
+        Simbolos con "/" (acciones de clase "BIO/B", warrants "/WS",
+        unidades "/U", derechos "/R") se excluyen aca -- Alpaca los rechaza
+        con 400 "invalid symbol", y confirmado en vivo que UN SOLO simbolo
+        invalido en un lote de varios simbolos tumba la respuesta ENTERA
+        (ni siquiera los simbolos validos del mismo lote se salvan). No
+        vale la pena rastrearlos: no hay forma de traer su historial desde
+        Alpaca. Al no aparecer aca, el mecanismo de "deslistado" ya
+        existente en SymbolPoller los marca is_active=false solo si ya
+        estaban rastreados de antes."""
         result: dict[str, str] = {}
         for market, mic in _MARKETS.items():
             req = urllib.request.Request(
@@ -34,7 +44,10 @@ class MarketdataClient:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     entries = json.loads(resp.read())
                 for entry in entries:
-                    result[entry["symbol"]] = market
+                    symbol = entry["symbol"]
+                    if "/" in symbol:
+                        continue
+                    result[symbol] = market
             except Exception as e:
                 logger.error("Failed to fetch symbols for market %s: %s", market, e)
         return result
