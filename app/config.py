@@ -33,11 +33,18 @@ class Settings(BaseSettings):
     # CPU -- paralelizarla ayuda. db_pool_max_connections cubre 2 hilos del
     # scheduler (backfill + steady-state) * scheduler_write_workers cada uno,
     # mas margen para la API HTTP (routes_candles/routes_symbols) y
-    # symbol_poller, que comparten el mismo pool. El servidor comparte
-    # memoria con otros proyectos (confirmado: ~8GB/11GB en uso, swap
-    # activo) -- valores moderados a proposito, no maximizar paralelismo.
-    scheduler_write_workers: int = 6
-    db_pool_max_connections: int = 16
+    # symbol_poller, que comparten el mismo pool.
+    #
+    # El host es de 4 cores compartido con otro proyecto entero (~15 JVMs
+    # propias, sin ningun aislamiento de recursos) -- 6 workers x 2 hilos
+    # del scheduler = hasta 12 conexiones Postgres activas a la vez
+    # confirmado en produccion como demasiada concurrencia real para 4
+    # cores (load average subiendo a 40+ sin bajar, ps mostrando varios
+    # backends de Postgres compitiendo por CPU en COMMIT). Bajado a un
+    # valor conservador: menos que el maximo posible, pero sigue siendo
+    # mejor que el original 100% secuencial.
+    scheduler_write_workers: int = 2
+    db_pool_max_connections: int = 8
 
     log_level: str = "INFO"
 
