@@ -82,7 +82,10 @@ class Scheduler:
         # necesarias en un orden de magnitud.
         batch_size = settings.alpaca_symbols_per_call_backfill if is_backfill \
             else settings.alpaca_symbols_per_call_steady_state
+        kind = "backfill" if is_backfill else "steady-state"
+        total_batches = sum(-(-len(list(g)) // batch_size) for _, g in groupby(sorted(rows, key=lambda r: r.timeframe), key=lambda r: r.timeframe))
         processed = 0
+        batch_num = 0
         rows_sorted = sorted(rows, key=lambda r: r.timeframe)
         for timeframe, group in groupby(rows_sorted, key=lambda r: r.timeframe):
             group_rows = list(group)
@@ -92,6 +95,15 @@ class Scheduler:
                 batch = group_rows[i:i + batch_size]
                 self._fetch_and_write_batch(batch, timeframe, is_backfill)
                 processed += len(batch)
+                batch_num += 1
+                # Un solo tick puede tardar horas en workloads grandes (miles
+                # de filas debidas, dominado por timeframes de minutos) --
+                # sin esto, el log de resumen al final del tick no aparecia
+                # en ese tiempo, dando la falsa impresion de que no estaba
+                # pasando nada.
+                if batch_num % 10 == 0 or batch_num == total_batches:
+                    logger.info("Scheduler %s progress: batch %d/%d (%s, %d filas hasta ahora)",
+                                kind, batch_num, total_batches, timeframe, processed)
         return processed
 
     def _fetch_and_write_batch(self, batch: list[DueRow], timeframe: str, is_backfill: bool) -> None:
