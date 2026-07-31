@@ -17,7 +17,16 @@ _UPSERT_SQL = """
 """
 
 
-def write_bars(symbol_id: int, timeframe: str, bars: list[Bar], source: str = "alpaca_native") -> None:
+def write_bars(
+    symbol_id: int, timeframe: str, bars: list[Bar], source: str = "alpaca_native", derive: bool = True,
+) -> None:
+    """derive=False salta el recalculo de D2/D3 tras escribir D1 -- usado
+    durante el backfill, donde cada batch escribe solo una porcion parcial
+    del historial de un simbolo (releer y regrupar TODO el D1 acumulado en
+    cada una de esas escrituras parciales es trabajo repetido que crece con
+    cada tick, ver Scheduler._fetch_and_write_batch, que llama a
+    derive_daily_aggregates() una sola vez cuando el backfill de ese simbolo
+    de verdad termina)."""
     if not bars:
         return
     if timeframe == "D1":
@@ -35,11 +44,11 @@ def write_bars(symbol_id: int, timeframe: str, bars: list[Bar], source: str = "a
         with conn.cursor() as cur:
             execute_values(cur, _UPSERT_SQL, rows)
 
-    if timeframe == "D1":
-        _derive_and_write(symbol_id)
+    if timeframe == "D1" and derive:
+        derive_daily_aggregates(symbol_id)
 
 
-def _derive_and_write(symbol_id: int) -> None:
+def derive_daily_aggregates(symbol_id: int) -> None:
     """D2/D3 se calculan al escribir D1, no al leer -- una foto intermedia
     de un grupo incompleto nunca queda persistida (ver aggregation.py). Se
     relee TODO el historial D1 guardado (no solo el lote recien escrito),

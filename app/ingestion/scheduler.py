@@ -6,7 +6,7 @@ from itertools import groupby
 from app.alpaca.client import AlpacaClient
 from app.alpaca.rate_limiter import TokenBucket
 from app.config import settings
-from app.ingestion.candle_writer import write_bars
+from app.ingestion.candle_writer import derive_daily_aggregates, write_bars
 from app.ingestion.watermark_repository import DueRow, fetch_due_rows, update_watermark
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,14 @@ class Scheduler:
             row = by_symbol.get(symbol)
             if row is None:
                 continue
-            write_bars(row.symbol_id, timeframe, bars)
+            # Durante backfill cada batch trae solo una porcion parcial del
+            # historial -- derivar D2/D3 aca releeria y regruparia TODO el D1
+            # acumulado en cada tick, un costo que crece sin parar a medida
+            # que avanza el backfill (confirmado como el cuello de botella
+            # real: una llamada a Alpaca de 100 simbolos tarda ~10s, pero el
+            # batch completo tardaba minutos). Se difiere a una sola vez, mas
+            # abajo, cuando el backfill de ESE simbolo de verdad termina.
+            write_bars(row.symbol_id, timeframe, bars, derive=not is_backfill)
             if bars:
                 newest = max(b.ts for b in bars)
                 oldest = min(b.ts for b in bars)
@@ -138,3 +145,5 @@ class Scheduler:
             elif is_backfill:
                 # Pagina vacia = ya no hay mas historia disponible en Alpaca para este simbolo.
                 update_watermark(row.symbol_id, timeframe, newest_ts=None, oldest_ts=None, backfill_complete=True)
+                if timeframe == "D1":
+                    derive_daily_aggregates(row.symbol_id)
