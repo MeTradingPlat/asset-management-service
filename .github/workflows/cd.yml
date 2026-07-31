@@ -20,17 +20,29 @@ jobs:
         run: |
           if [ -z "$(docker ps -a -q -f name=postgres-historical)" ]; then
             echo "Creating and starting postgres-historical container..."
+            # candles ya pasa los 20M de filas y crece rapido -- shared_buffers/
+            # maintenance_work_mem por defecto (128MB/64MB) son los valores de
+            # fabrica de Postgres, pensados para instalaciones chicas, sin
+            # relacion con cuanta RAM le de el contenedor. maintenance_work_mem
+            # en particular es lo que le da presupuesto de memoria a VACUUM --
+            # con 64MB, un vacuum sobre esta tabla se estiraba 30+ minutos
+            # compitiendo por I/O con las escrituras en vivo (confirmado en
+            # produccion). El servidor tiene 12GB RAM / 1TB disco disponibles.
             docker run -d \
               --name "postgres-historical" \
               --network "metradingplat-network" \
               --restart "always" \
-              --memory "768m" \
-              --memory-swap "768m" \
+              --memory "2g" \
+              --memory-swap "2g" \
               -e POSTGRES_DB="bd_historical" \
               -e POSTGRES_USER="user_historical" \
               -e POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
               -v postgres_historical_data:/var/lib/postgresql/data \
-              postgres:15-alpine
+              postgres:15-alpine \
+              -c shared_buffers=1GB \
+              -c effective_cache_size=1536MB \
+              -c work_mem=32MB \
+              -c maintenance_work_mem=512MB
           else
             echo "postgres-historical container exists, ensuring it is started..."
             docker start postgres-historical
