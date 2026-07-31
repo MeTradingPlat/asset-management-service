@@ -11,13 +11,13 @@ logger = logging.getLogger(__name__)
 _pool: pg_pool.ThreadedConnectionPool | None = None
 
 
-def init_pool(minconn: int = 1, maxconn: int = 10) -> None:
+def init_pool(minconn: int = 1, maxconn: int | None = None) -> None:
     global _pool
     if _pool is not None:
         return
     _pool = pg_pool.ThreadedConnectionPool(
         minconn,
-        maxconn,
+        maxconn if maxconn is not None else settings.db_pool_max_connections,
         host=settings.db_host,
         port=settings.db_port,
         dbname=settings.db_name,

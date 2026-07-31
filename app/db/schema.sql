@@ -35,3 +35,17 @@ CREATE TABLE IF NOT EXISTS candles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_candles_symbol_tf ON candles (symbol_id, timeframe);
+
+-- candles recibe UPSERTs (ON CONFLICT DO UPDATE) constantes durante el
+-- backfill -- cada UPDATE deja una tupla muerta. Con el default de Postgres
+-- (vacuum recien al 20% de tuplas muertas) el vacuum se acumula sobre una
+-- tabla de decenas de millones de filas y termina en una sola pasada
+-- larguisima que compite por I/O con las escrituras en vivo (confirmado en
+-- produccion: una pasada de mas de 30 minutos atascada). Bajar el umbral
+-- dispara vacuums mas chicos y frecuentes en vez de uno gigante; subir el
+-- cost_limit deja que cada pasada termine mas rapido una vez que arranca.
+ALTER TABLE candles SET (
+    autovacuum_vacuum_scale_factor = 0.02,
+    autovacuum_analyze_scale_factor = 0.02,
+    autovacuum_vacuum_cost_limit = 1000
+);

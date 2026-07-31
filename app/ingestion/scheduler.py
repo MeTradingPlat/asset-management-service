@@ -1,3 +1,4 @@
+import concurrent.futures
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
@@ -125,25 +126,44 @@ class Scheduler:
                 update_watermark(row.symbol_id, timeframe, newest_ts=None, oldest_ts=None, error=str(e))
             return
 
-        for symbol, bars in bars_by_symbol.items():
-            row = by_symbol.get(symbol)
-            if row is None:
-                continue
-            # Durante backfill cada batch trae solo una porcion parcial del
-            # historial -- derivar D2/D3 aca releeria y regruparia TODO el D1
-            # acumulado en cada tick, un costo que crece sin parar a medida
-            # que avanza el backfill (confirmado como el cuello de botella
-            # real: una llamada a Alpaca de 100 simbolos tarda ~10s, pero el
-            # batch completo tardaba minutos). Se difiere a una sola vez, mas
-            # abajo, cuando el backfill de ESE simbolo de verdad termina.
-            write_bars(row.symbol_id, timeframe, bars, derive=not is_backfill)
-            if bars:
-                newest = max(b.ts for b in bars)
-                oldest = min(b.ts for b in bars)
-                update_watermark(row.symbol_id, timeframe, newest_ts=newest, oldest_ts=oldest,
-                                  backfill_complete=(False if is_backfill else None))
-            elif is_backfill:
-                # Pagina vacia = ya no hay mas historia disponible en Alpaca para este simbolo.
-                update_watermark(row.symbol_id, timeframe, newest_ts=None, oldest_ts=None, backfill_complete=True)
-                if timeframe == "D1":
-                    derive_daily_aggregates(row.symbol_id)
+        # Escribir cada simbolo es espera de I/O (conexion + upsert + a
+        # veces re-lectura para derivar D2/D3), no trabajo de CPU -- hacerlo
+        # secuencial uno por uno desperdicia el tiempo muerto de cada espera.
+        # El pool de conexiones (db_pool_max_connections) esta dimensionado
+        # para cubrir scheduler_write_workers en los DOS hilos del scheduler
+        # (backfill + steady-state) a la vez, mas margen para la API HTTP.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=settings.scheduler_write_workers) as executor:
+            futures = {
+                executor.submit(self._write_symbol_result, symbol, bars, by_symbol.get(symbol), timeframe, is_backfill): symbol
+                for symbol, bars in bars_by_symbol.items()
+            }
+            for future in concurrent.futures.as_completed(futures):
+                symbol = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error("Failed to write %s bars for %s: %s", timeframe, symbol, e)
+
+    def _write_symbol_result(
+        self, symbol: str, bars: list, row: DueRow | None, timeframe: str, is_backfill: bool,
+    ) -> None:
+        if row is None:
+            return
+        # Durante backfill cada batch trae solo una porcion parcial del
+        # historial -- derivar D2/D3 aca releeria y regruparia TODO el D1
+        # acumulado en cada tick, un costo que crece sin parar a medida
+        # que avanza el backfill (confirmado como el cuello de botella
+        # real: una llamada a Alpaca de 100 simbolos tarda ~10s, pero el
+        # batch completo tardaba minutos). Se difiere a una sola vez, mas
+        # abajo, cuando el backfill de ESE simbolo de verdad termina.
+        write_bars(row.symbol_id, timeframe, bars, derive=not is_backfill)
+        if bars:
+            newest = max(b.ts for b in bars)
+            oldest = min(b.ts for b in bars)
+            update_watermark(row.symbol_id, timeframe, newest_ts=newest, oldest_ts=oldest,
+                              backfill_complete=(False if is_backfill else None))
+        elif is_backfill:
+            # Pagina vacia = ya no hay mas historia disponible en Alpaca para este simbolo.
+            update_watermark(row.symbol_id, timeframe, newest_ts=None, oldest_ts=None, backfill_complete=True)
+            if timeframe == "D1":
+                derive_daily_aggregates(row.symbol_id)

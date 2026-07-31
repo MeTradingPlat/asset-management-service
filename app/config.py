@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     alpaca_symbols_per_call_steady_state: int = 1000
 
     scheduler_tick_seconds: int = 30
+    # La escritura por simbolo dentro de un batch es espera de I/O (DB), no
+    # CPU -- paralelizarla ayuda. db_pool_max_connections cubre 2 hilos del
+    # scheduler (backfill + steady-state) * scheduler_write_workers cada uno,
+    # mas margen para la API HTTP (routes_candles/routes_symbols) y
+    # symbol_poller, que comparten el mismo pool. El servidor comparte
+    # memoria con otros proyectos (confirmado: ~8GB/11GB en uso, swap
+    # activo) -- valores moderados a proposito, no maximizar paralelismo.
+    scheduler_write_workers: int = 6
+    db_pool_max_connections: int = 16
 
     log_level: str = "INFO"
 
