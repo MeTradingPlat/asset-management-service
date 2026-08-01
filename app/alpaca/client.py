@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -11,6 +12,12 @@ from app.domain.aggregation import Bar
 from app.domain.timeframes import alpaca_native_string
 
 logger = logging.getLogger(__name__)
+
+# Alpaca no siempre manda "Retry-After" en el 429 (confirmado en vivo: a
+# veces si, a veces no) -- este es el piso a usar cuando falta, tomado de su
+# propia recomendacion de backoff (docs.alpaca.markets, seccion rate limits).
+_DEFAULT_RETRY_AFTER_SECONDS = 3.0
+_MAX_429_RETRIES = 5
 
 
 class AlpacaClient:
@@ -62,8 +69,7 @@ class AlpacaClient:
                     "APCA-API-SECRET-KEY": settings.alpaca_api_secret,
                 },
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read())
+            data = self._request_with_429_retry(req)
 
             for sym, bars in (data.get("bars") or {}).items():
                 result.setdefault(sym, []).extend(
@@ -80,3 +86,27 @@ class AlpacaClient:
                 break
 
         return result
+
+    def _request_with_429_retry(self, req: urllib.request.Request) -> dict:
+        # Alpaca aplica algun tope de rafaga ademas del promedio/min (ver
+        # penalize() en rate_limiter.py) -- un 429 aca frena a TODOS los
+        # hilos que comparten el rate limiter via su propio Retry-After, no
+        # solo reintenta esta llamada, para no seguir chocando con el mismo
+        # tope desde otro hilo mientras este espera.
+        for attempt in range(_MAX_429_RETRIES + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    return json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                if e.code != 429 or attempt == _MAX_429_RETRIES:
+                    raise
+                retry_after = _DEFAULT_RETRY_AFTER_SECONDS
+                header = e.headers.get("Retry-After") if e.headers else None
+                if header:
+                    try:
+                        retry_after = float(header)
+                    except ValueError:
+                        pass
+                logger.warning("Alpaca 429, esperando %.1fs (intento %d/%d)", retry_after, attempt + 1, _MAX_429_RETRIES)
+                self._rate_limiter.penalize(retry_after)
+                time.sleep(retry_after)
