@@ -29,11 +29,22 @@ class Settings(BaseSettings):
     alpaca_symbols_per_call_steady_state: int = 1000
 
     scheduler_tick_seconds: int = 30
+    # Cuantos lotes (llamadas a Alpaca) corren en paralelo POR hilo del
+    # scheduler (backfill y steady-state cuentan por separado). El
+    # TokenBucket compartido (rate_limiter.py) es thread-safe y se consulta
+    # por pagina real, asi que subir esto nunca puede pasar las llamadas/min
+    # configuradas -- solo evita que cada hilo quede bloqueado esperando UNA
+    # respuesta de Alpaca (~10s) a la vez mientras el presupuesto real sigue
+    # libre. En 1 (default) el comportamiento es igual al original: una
+    # llamada en vuelo por hilo.
+    scheduler_fetch_workers: int = 1
     # La escritura por simbolo dentro de un batch es espera de I/O (DB), no
-    # CPU -- paralelizarla ayuda. db_pool_max_connections cubre 2 hilos del
-    # scheduler (backfill + steady-state) * scheduler_write_workers cada uno,
-    # mas margen para la API HTTP (routes_candles/routes_symbols) y
-    # symbol_poller, que comparten el mismo pool.
+    # CPU -- paralelizarla ayuda. db_pool_max_connections debe cubrir el
+    # peor caso: 2 hilos del scheduler (backfill + steady-state) *
+    # scheduler_fetch_workers lotes en vuelo cada uno *
+    # scheduler_write_workers conexiones por lote, mas margen para la API
+    # HTTP (routes_candles/routes_symbols) y symbol_poller, que comparten el
+    # mismo pool.
     #
     # El host es de 4 cores compartido con otro proyecto entero (~15 JVMs
     # propias, sin ningun aislamiento de recursos) -- 6 workers x 2 hilos
@@ -42,7 +53,10 @@ class Settings(BaseSettings):
     # cores (load average subiendo a 40+ sin bajar, ps mostrando varios
     # backends de Postgres compitiendo por CPU en COMMIT). Bajado a un
     # valor conservador: menos que el maximo posible, pero sigue siendo
-    # mejor que el original 100% secuencial.
+    # mejor que el original 100% secuencial. Subir scheduler_fetch_workers
+    # en vez de scheduler_write_workers cuando el host tenga mas margen --
+    # el cuello de botella real es el fetch a Alpaca (~10s/llamada), no la
+    # escritura.
     scheduler_write_workers: int = 2
     db_pool_max_connections: int = 8
 

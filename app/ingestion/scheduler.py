@@ -84,27 +84,44 @@ class Scheduler:
         batch_size = settings.alpaca_symbols_per_call_backfill if is_backfill \
             else settings.alpaca_symbols_per_call_steady_state
         kind = "backfill" if is_backfill else "steady-state"
-        total_batches = sum(-(-len(list(g)) // batch_size) for _, g in groupby(sorted(rows, key=lambda r: r.timeframe), key=lambda r: r.timeframe))
-        processed = 0
-        batch_num = 0
         rows_sorted = sorted(rows, key=lambda r: r.timeframe)
-        for timeframe, group in groupby(rows_sorted, key=lambda r: r.timeframe):
-            group_rows = list(group)
-            for i in range(0, len(group_rows), batch_size):
+        batches = [
+            (timeframe, group_rows[i:i + batch_size])
+            for timeframe, group in groupby(rows_sorted, key=lambda r: r.timeframe)
+            for group_rows in (list(group),)
+            for i in range(0, len(group_rows), batch_size)
+        ]
+        total_batches = len(batches)
+        processed = 0
+        completed = 0
+        progress_lock = threading.Lock()
+
+        # Cada lote espera su propio turno en el TokenBucket compartido
+        # (thread-safe, ver rate_limiter.py) antes de llamar a Alpaca, asi
+        # que lanzar varios en paralelo aca no rompe el limite real de
+        # 200 llamadas/min -- solo aprovecha que antes habia como maximo
+        # UNA llamada en vuelo por hilo del scheduler (backfill o
+        # steady-state) mientras cada una tarda ~10s, dejando el
+        # presupuesto real muy por debajo del tope (una cada 0.3s
+        # posibles) sin nada que lo usara.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=settings.scheduler_fetch_workers) as executor:
+            futures: dict[concurrent.futures.Future, int] = {}
+            for timeframe, batch in batches:
                 if self._stop.is_set():
-                    return processed
-                batch = group_rows[i:i + batch_size]
-                self._fetch_and_write_batch(batch, timeframe, is_backfill)
-                processed += len(batch)
-                batch_num += 1
-                # Un solo tick puede tardar horas en workloads grandes (miles
-                # de filas debidas, dominado por timeframes de minutos) --
-                # sin esto, el log de resumen al final del tick no aparecia
-                # en ese tiempo, dando la falsa impresion de que no estaba
-                # pasando nada.
-                if batch_num % 10 == 0 or batch_num == total_batches:
-                    logger.info("Scheduler %s progress: batch %d/%d (%s, %d filas hasta ahora)",
-                                kind, batch_num, total_batches, timeframe, processed)
+                    break
+                futures[executor.submit(self._fetch_and_write_batch, batch, timeframe, is_backfill)] = len(batch)
+            # Un solo tick puede tardar horas en workloads grandes (miles de
+            # filas debidas, dominado por timeframes de minutos) -- sin
+            # esto, el log de resumen al final del tick no aparecia en ese
+            # tiempo, dando la falsa impresion de que no estaba pasando nada.
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
+                with progress_lock:
+                    completed += 1
+                    processed += futures[future]
+                    if completed % 10 == 0 or completed == total_batches:
+                        logger.info("Scheduler %s progress: batch %d/%d (%d filas hasta ahora)",
+                                    kind, completed, total_batches, processed)
         return processed
 
     def _fetch_and_write_batch(self, batch: list[DueRow], timeframe: str, is_backfill: bool) -> None:
