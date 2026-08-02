@@ -135,14 +135,41 @@ class Scheduler:
         else:
             start, end = now - timedelta(days=3), now
 
+        # Confirmado en produccion: acumular TODAS las paginas de un backfill
+        # de minutos (7 anios, cientos de paginas) en memoria antes de
+        # escribir una sola fila generaba picos de RAM sin control -- con
+        # varios workers cayendo en lotes grandes a la vez, tumbaba el
+        # contenedor por OOM cada 10-20min pese a subir el limite de
+        # memoria (el limite solo retrasaba lo inevitable, no arreglaba la
+        # causa). get_bars_streaming entrega cada pagina apenas llega y
+        # esta se escribe/descarta de inmediato via touched_page, sin
+        # acumular nada entre paginas -- el pico de memoria pasa de "todo
+        # el backfill del simbolo" a "una pagina".
+        touched: set[str] = set()
+
+        def touched_page(page_bars: dict[str, list]) -> None:
+            relevant = {sym: bars for sym, bars in page_bars.items() if sym in by_symbol}
+            touched.update(relevant)
+            self._write_page(relevant, by_symbol, timeframe, is_backfill)
+
         try:
-            bars_by_symbol = self._alpaca.get_bars(symbols, timeframe, start, end)
+            self._alpaca.get_bars_streaming(symbols, timeframe, start, end, touched_page)
         except Exception as e:
             logger.error("Alpaca fetch failed for %s batch (%s): %s", timeframe, symbols, e)
             for row in batch:
                 update_watermark(row.symbol_id, timeframe, newest_ts=None, oldest_ts=None, error=str(e))
             return
 
+        # Simbolos que no aparecieron en NINGUNA pagina equivalen al "bars
+        # vacio" del diseno anterior (ver _write_symbol_result) -- Alpaca no
+        # tiene mas historia para ellos en este rango.
+        leftovers = {sym: [] for sym in by_symbol if sym not in touched}
+        if leftovers:
+            self._write_page(leftovers, by_symbol, timeframe, is_backfill)
+
+    def _write_page(
+        self, page_bars: dict[str, list], by_symbol: dict[str, DueRow], timeframe: str, is_backfill: bool,
+    ) -> None:
         # Escribir cada simbolo es espera de I/O (conexion + upsert + a
         # veces re-lectura para derivar D2/D3), no trabajo de CPU -- hacerlo
         # secuencial uno por uno desperdicia el tiempo muerto de cada espera.
@@ -152,7 +179,7 @@ class Scheduler:
         with concurrent.futures.ThreadPoolExecutor(max_workers=settings.scheduler_write_workers) as executor:
             futures = {
                 executor.submit(self._write_symbol_result, symbol, bars, by_symbol.get(symbol), timeframe, is_backfill): symbol
-                for symbol, bars in bars_by_symbol.items()
+                for symbol, bars in page_bars.items()
             }
             for future in concurrent.futures.as_completed(futures):
                 symbol = futures[future]

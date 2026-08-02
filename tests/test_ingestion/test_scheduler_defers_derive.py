@@ -15,10 +15,17 @@ def _bar() -> Bar:
     return Bar(ts=datetime.now(timezone.utc), open=1, high=1, low=1, close=1, volume=1)
 
 
+def _streaming(pages: list[dict[str, list]]):
+    def fake_streaming(symbols, timeframe, start, end, on_page):
+        for page in pages:
+            on_page(page)
+    return fake_streaming
+
+
 def test_backfill_batch_skips_derive_while_still_receiving_bars():
     scheduler = Scheduler()
     row = _row("AAPL")
-    with patch.object(scheduler._alpaca, "get_bars", return_value={"AAPL": [_bar()]}), \
+    with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming([{"AAPL": [_bar()]}])), \
          patch("app.ingestion.scheduler.write_bars") as mock_write, \
          patch("app.ingestion.scheduler.derive_daily_aggregates") as mock_derive, \
          patch("app.ingestion.scheduler.update_watermark"):
@@ -32,7 +39,7 @@ def test_backfill_batch_skips_derive_while_still_receiving_bars():
 def test_backfill_batch_derives_once_when_symbol_history_is_exhausted():
     scheduler = Scheduler()
     row = _row("AAPL")
-    with patch.object(scheduler._alpaca, "get_bars", return_value={"AAPL": []}), \
+    with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming([])), \
          patch("app.ingestion.scheduler.write_bars") as mock_write, \
          patch("app.ingestion.scheduler.derive_daily_aggregates") as mock_derive, \
          patch("app.ingestion.scheduler.update_watermark"):
@@ -44,7 +51,7 @@ def test_backfill_batch_derives_once_when_symbol_history_is_exhausted():
 def test_steady_state_batch_still_derives_every_time():
     scheduler = Scheduler()
     row = _row("AAPL")
-    with patch.object(scheduler._alpaca, "get_bars", return_value={"AAPL": [_bar()]}), \
+    with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming([{"AAPL": [_bar()]}])), \
          patch("app.ingestion.scheduler.write_bars") as mock_write, \
          patch("app.ingestion.scheduler.derive_daily_aggregates") as mock_derive, \
          patch("app.ingestion.scheduler.update_watermark"):

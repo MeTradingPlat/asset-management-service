@@ -5,6 +5,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from typing import Callable
 
 from app.alpaca.rate_limiter import TokenBucket
 from app.config import settings
@@ -28,13 +29,43 @@ class AlpacaClient:
     def get_bars(
         self, symbols: list[str], timeframe: str, start: datetime, end: datetime,
     ) -> dict[str, list[Bar]]:
+        """Conveniencia sobre get_bars_streaming() para llamadores que
+        quieren el resultado completo de una sola vez -- solo apta para
+        pedidos chicos/acotados (ej. pruebas). El scheduler de backfill NO
+        usa esto: un backfill de minutos con 7 anios de historia son
+        cientos de paginas, y acumular todo eso en un dict antes de
+        devolver nada es exactamente el pico de memoria sin control que
+        get_bars_streaming evita (ver su docstring)."""
+        result: dict[str, list[Bar]] = {sym: [] for sym in symbols}
+
+        def collect(page_bars: dict[str, list[Bar]]) -> None:
+            for sym, bars in page_bars.items():
+                result.setdefault(sym, []).extend(bars)
+
+        self.get_bars_streaming(symbols, timeframe, start, end, collect)
+        return result
+
+    def get_bars_streaming(
+        self, symbols: list[str], timeframe: str, start: datetime, end: datetime,
+        on_page: Callable[[dict[str, list[Bar]]], None],
+    ) -> None:
         """Trae barras nativas de Alpaca para varios simbolos en una sola
-        llamada logica (mismo timeframe/rango), paginando via
+        peticion logica (mismo timeframe/rango), paginando via
         next_page_token. Cada pagina es una llamada HTTP real a Alpaca, asi
         que el rate limiter se consulta POR PAGINA (no una vez por lote) --
         una respuesta grande paginada igual respeta las 200 llamadas/min.
         Alpaca no soporta D2/D3 -- eso se deriva de D1 en otro lado
         (domain/aggregation.py), nunca se pide aca.
+
+        A diferencia de una version que acumule todas las paginas y
+        devuelva el resultado al final, esta invoca on_page() con cada
+        pagina apenas llega y la descarta -- confirmado en produccion que
+        un backfill de minutos (7 anios, cientos de paginas por lote) con
+        varios workers en paralelo cayendo en lotes grandes a la vez
+        generaba picos de memoria sin control, tumbando el contenedor por
+        OOM cada 10-20min pese a subir el limite de memoria del
+        contenedor (el limite solo retrasaba el choque, no arreglaba la
+        causa).
 
         Acciones de clase/warrants/units usan "/" en marketdata-service pero
         Alpaca solo los acepta con "." (confirmado en vivo: BRK/B falla,
@@ -42,7 +73,6 @@ class AlpacaClient:
         resto del sistema siga usando "/" de forma consistente."""
         alpaca_symbols = [sym.replace("/", ".") for sym in symbols]
         to_original = dict(zip(alpaca_symbols, symbols))
-        result: dict[str, list[Bar]] = {sym: [] for sym in symbols}
         page_token = None
         tf = alpaca_native_string(timeframe)
 
@@ -71,8 +101,9 @@ class AlpacaClient:
             )
             data = self._request_with_429_retry(req)
 
+            page_bars: dict[str, list[Bar]] = {}
             for sym, bars in (data.get("bars") or {}).items():
-                result.setdefault(sym, []).extend(
+                page_bars.setdefault(to_original.get(sym, sym), []).extend(
                     Bar(
                         ts=datetime.fromisoformat(b["t"].replace("Z", "+00:00")),
                         open=b["o"], high=b["h"], low=b["l"], close=b["c"],
@@ -80,12 +111,12 @@ class AlpacaClient:
                     )
                     for b in bars
                 )
+            if page_bars:
+                on_page(page_bars)
 
             page_token = data.get("next_page_token")
             if not page_token:
                 break
-
-        return result
 
     def _request_with_429_retry(self, req: urllib.request.Request) -> dict:
         # Alpaca aplica algun tope de rafaga ademas del promedio/min (ver

@@ -15,11 +15,17 @@ def _bar() -> Bar:
     return Bar(ts=datetime.now(timezone.utc), open=1, high=1, low=1, close=1, volume=1)
 
 
+def _streaming(page: dict[str, list]):
+    def fake_streaming(symbols, timeframe, start, end, on_page):
+        on_page(page)
+    return fake_streaming
+
+
 def test_all_symbols_in_batch_get_written():
     scheduler = Scheduler()
     rows = [_row(sym, i) for i, sym in enumerate(["AAPL", "MSFT", "TSLA"])]
     bars_by_symbol = {sym: [_bar()] for sym in ["AAPL", "MSFT", "TSLA"]}
-    with patch.object(scheduler._alpaca, "get_bars", return_value=bars_by_symbol), \
+    with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming(bars_by_symbol)), \
          patch("app.ingestion.scheduler.write_bars") as mock_write, \
          patch("app.ingestion.scheduler.update_watermark"):
         scheduler._fetch_and_write_batch(rows, "D1", is_backfill=True)
@@ -37,7 +43,7 @@ def test_one_symbol_failing_does_not_block_the_others():
         if symbol_id == 1:
             raise RuntimeError("DB write boom")
 
-    with patch.object(scheduler._alpaca, "get_bars", return_value=bars_by_symbol), \
+    with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming(bars_by_symbol)), \
          patch("app.ingestion.scheduler.write_bars", side_effect=flaky_write) as mock_write, \
          patch("app.ingestion.scheduler.update_watermark") as mock_watermark:
         scheduler._fetch_and_write_batch(rows, "D1", is_backfill=True)
