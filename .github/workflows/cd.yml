@@ -40,10 +40,10 @@ jobs:
         run: |
           docker network create metradingplat-network || echo "Network already exists"
 
-      - name: Run Postgres Container
+      - name: Create Postgres Container (not started -- see historical-data-service pause below)
         run: |
           if [ -z "$(docker ps -a -q -f name=postgres-historical)" ]; then
-            echo "Creating and starting postgres-historical container..."
+            echo "Creating postgres-historical container (left stopped on purpose)..."
             # candles ya pasa los 20M de filas y crece rapido -- shared_buffers/
             # maintenance_work_mem por defecto (128MB/64MB) son los valores de
             # fabrica de Postgres, pensados para instalaciones chicas, sin
@@ -52,10 +52,15 @@ jobs:
             # con 64MB, un vacuum sobre esta tabla se estiraba 30+ minutos
             # compitiendo por I/O con las escrituras en vivo (confirmado en
             # produccion). El servidor tiene 12GB RAM / 1TB disco disponibles.
-            docker run -d \
+            #
+            # restart=no y "docker create" (no "run -d"): historical-data-service
+            # y esta base saturaban el disco compartido del host durante el
+            # backfill (confirmado en vivo 2026-08-03) -- se dejan creadas pero
+            # apagadas hasta que alguien las arranque a mano quando sea seguro.
+            docker create \
               --name "postgres-historical" \
               --network "metradingplat-network" \
-              --restart "always" \
+              --restart "no" \
               --memory "2g" \
               --memory-swap "2g" \
               -e POSTGRES_DB="bd_historical" \
@@ -68,8 +73,7 @@ jobs:
               -c work_mem=32MB \
               -c maintenance_work_mem=512MB
           else
-            echo "postgres-historical container exists, ensuring it is started..."
-            docker start postgres-historical
+            echo "postgres-historical container already exists -- leaving its current state alone (NOT auto-starting it)."
           fi
 
       - name: Infrastructure Diagnosis & Cleanup
@@ -89,12 +93,19 @@ jobs:
           echo "All pull attempts failed. Docker daemon might need a manual restart."
           exit 1
 
-      - name: Run Application Container
+      - name: Create Application Container (deliberately NOT started)
         run: |
-          docker run -d \
+          # historical-data-service's backfill saturated the shared host's disk
+          # for hours (confirmed in production 2026-08-03) and this workflow's
+          # own "always/unless-stopped" restart policies kept resurrecting it
+          # under people's feet mid-incident. "docker create" (not "run -d")
+          # deploys the new image and leaves the container sitting stopped --
+          # someone has to explicitly `docker start historical-data-service`
+          # once it's safe to run. --restart no so it never self-resurrects.
+          docker create \
             --name "historical-data-service" \
             --network "metradingplat-network" \
-            --restart "unless-stopped" \
+            --restart "no" \
             --memory "512m" \
             --memory-swap "512m" \
             --label project="metradingplat" \
@@ -123,10 +134,8 @@ jobs:
 
       - name: Final Status Check
         run: |
-          sleep 5
-          docker ps | grep historical-data-service
-          echo "--- LAST 20 LINES OF LOGS ---"
-          docker logs --tail 20 historical-data-service
+          echo "historical-data-service and postgres-historical are created but deliberately NOT started -- run 'docker start postgres-historical historical-data-service' manually when it's safe to."
+          docker ps -a --filter "name=historical-data-service" --filter "name=postgres-historical" --format '{{.Names}}: {{.Status}}'
 
       - name: Release exclusive deploy lock
         if: always()
