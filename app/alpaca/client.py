@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -19,6 +20,24 @@ logger = logging.getLogger(__name__)
 # propia recomendacion de backoff (docs.alpaca.markets, seccion rate limits).
 _DEFAULT_RETRY_AFTER_SECONDS = 3.0
 _MAX_429_RETRIES = 5
+
+# marketdata-service (DxLink/TastyTrade convention) marks preferred shares as
+# "TICKERp" (single series) or "TICKERpX" (series X) -- confirmed live
+# against Alpaca that this was silently returning zero bars for every one of
+# these (384 symbols), each wrongly marked backfill_complete instead of
+# erroring, because Alpaca expects "TICKER.PR"/"TICKER.PRX" instead (e.g.
+# BACpE -> BAC.PRE, ETIp -> ETI.PR -- both verified live to return real
+# data). The "/" -> "." rule below only covers class shares (BRK/B ->
+# BRK.B), not this.
+_PREFERRED_RE = re.compile(r"^([A-Z]+)p([A-Z]?)$")
+
+
+def _to_alpaca_symbol(symbol: str) -> str:
+    m = _PREFERRED_RE.match(symbol)
+    if m:
+        ticker, series = m.groups()
+        return f"{ticker}.PR{series}"
+    return symbol.replace("/", ".")
 
 
 class AlpacaClient:
@@ -69,9 +88,12 @@ class AlpacaClient:
 
         Acciones de clase/warrants/units usan "/" en marketdata-service pero
         Alpaca solo los acepta con "." (confirmado en vivo: BRK/B falla,
-        BRK.B funciona) -- se traduce aca en ambas direcciones para que el
-        resto del sistema siga usando "/" de forma consistente."""
-        alpaca_symbols = [sym.replace("/", ".") for sym in symbols]
+        BRK.B funciona), y preferentes usan "TICKERp"/"TICKERpX" en vez del
+        "TICKER.PR"/"TICKER.PRX" de Alpaca (ver _to_alpaca_symbol) -- ambos
+        se traducen aca en ambas direcciones para que el resto del sistema
+        siga usando la convencion de marketdata-service de forma
+        consistente."""
+        alpaca_symbols = [_to_alpaca_symbol(sym) for sym in symbols]
         to_original = dict(zip(alpaca_symbols, symbols))
         page_token = None
         tf = alpaca_native_string(timeframe)
