@@ -115,8 +115,8 @@ jobs:
             -e HD_DB_NAME="bd_historical" \
             -e HD_DB_USER="user_historical" \
             -e HD_DB_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
-            -e HD_ALPACA_API_KEY="${{ secrets.HD_ALPACA_API_KEY }}" \
-            -e HD_ALPACA_API_SECRET="${{ secrets.HD_ALPACA_API_SECRET }}" \
+            -e HD_ALPACA_API_KEY="${{ secrets.ALPACA_API_KEY }}" \
+            -e HD_ALPACA_API_SECRET="${{ secrets.ALPACA_API_SECRET }}" \
             -e HD_MARKETDATA_URL="http://marketdata-service:8082" \
             -e HD_LOG_LEVEL="INFO" \
             virtud142/metradingplat_historical_data_service:latest

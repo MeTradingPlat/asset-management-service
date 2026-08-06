@@ -20,8 +20,8 @@ jobs:
       - name: Run integration tests (Alpaca real)
         run: |
           docker run --rm --network host \
-            -e HD_ALPACA_API_KEY=${{ secrets.HD_ALPACA_API_KEY }} \
-            -e HD_ALPACA_API_SECRET=${{ secrets.HD_ALPACA_API_SECRET }} \
+            -e HD_ALPACA_API_KEY=${{ secrets.ALPACA_API_KEY }} \
+            -e HD_ALPACA_API_SECRET=${{ secrets.ALPACA_API_SECRET }} \
             historical-data-service:test pytest -m "integration" -v -s --tb=short
         continue-on-error: true
 
