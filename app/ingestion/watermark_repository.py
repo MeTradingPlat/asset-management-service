@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from app.db.engine import get_connection
-from app.domain.timeframes import is_derived
+from app.domain.timeframes import bar_duration_minutes, is_derived
 
 logger = logging.getLogger(__name__)
 
@@ -17,26 +17,29 @@ class DueRow:
     oldest_ingested_at: datetime | None
 
 
-# Ventana real que DxLink puede servir en vivo por temporalidad -- no es un
-# numero de barras generico, varia mucho por granularidad (confirmado esta
-# misma sesion via docs oficiales de dxFeed + recomendacion de TastyTrade):
-# minutos, muy corta (~1 dia recomendado oficialmente para M1, mismo orden
-# de magnitud usado para M2-M45 sin dato mas fino investigado aparte);
-# horas, ~285 dias; diario o mas grueso, todo el historico disponible.
-_DXLINK_WINDOWS: dict[str, timedelta] = {
-    **{tf: timedelta(days=1) for tf in ("M1", "M2", "M3", "M5", "M10", "M15", "M30", "M45")},
-    **{tf: timedelta(days=285) for tf in ("H1", "H2", "H3", "H4", "H12")},
-    **{tf: timedelta(days=3650) for tf in ("D1", "W1", "MO1", "MO3", "MO6", "Y1")},
-}
-# Aun para temporalidades con ventana "ilimitada" del lado de DxLink, el
-# archivo no debe quedarse desactualizado por mucho tiempo -- se refresca
-# al menos una vez al dia sin importar la temporalidad.
+# La ventana real que marketdata-service pide en vivo a DxLink por
+# temporalidad esta en TastyTradeService.minLookbackFor() (3d para M1-M3,
+# 7d para M5/M10, 10d para M15-M45, 14d para H1-H12, 1825d para D1+ -- cita
+# la recomendacion oficial de TastyTrade en developer.tastytrade.com/
+# streaming-market-data, seccion "Candle Events"). Ese es el verdadero techo
+# de seguridad, no un numero generico de dxFeed -- pero con un piso de 10
+# velas / techo de 1 dia (abajo), el umbral resultante nunca se acerca ni de
+# lejos a esas ventanas (la mas angosta, M1-M3, es 3 dias -- 4x el techo de
+# 1 dia), asi que no hace falta referenciarlas en el calculo mismo.
+#
+# Umbral = 10 barras de esa temporalidad, con piso de 15min (no perseguir
+# M1 mas seguido que eso -- 13k+ simbolos de por medio) y techo de 1 dia
+# (ni siquiera D1+ debe quedarse mas viejo que eso, aunque su ventana real
+# sea de anios). Esto es lo que hace que M1 se revise cada 15min y D1 cada
+# 1 dia en vez de tratarlos igual.
+_REFRESH_BARS = 10
+_MIN_REFRESH_INTERVAL = timedelta(minutes=15)
 _MAX_REFRESH_INTERVAL = timedelta(days=1)
 
 
 def _refresh_threshold(timeframe: str) -> timedelta:
-    window = _DXLINK_WINDOWS.get(timeframe, timedelta(days=1))
-    return min(window * 2 / 3, _MAX_REFRESH_INTERVAL)
+    natural = timedelta(minutes=bar_duration_minutes(timeframe) * _REFRESH_BARS)
+    return max(_MIN_REFRESH_INTERVAL, min(natural, _MAX_REFRESH_INTERVAL))
 
 
 def fetch_due_rows() -> tuple[list[DueRow], list[DueRow]]:

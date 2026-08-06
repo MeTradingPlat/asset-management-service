@@ -7,6 +7,7 @@ from itertools import groupby
 from app.alpaca.client import AlpacaClient
 from app.alpaca.rate_limiter import TokenBucket
 from app.config import settings
+from app.domain.timeframes import bar_duration_minutes
 from app.ingestion.candle_writer import derive_daily_aggregates, write_bars
 from app.ingestion.watermark_repository import DueRow, fetch_due_rows, update_watermark
 
@@ -84,7 +85,18 @@ class Scheduler:
         batch_size = settings.alpaca_symbols_per_call_backfill if is_backfill \
             else settings.alpaca_symbols_per_call_steady_state
         kind = "backfill" if is_backfill else "steady-state"
-        rows_sorted = sorted(rows, key=lambda r: r.timeframe)
+        # steady-state: mas fino primero. Con scheduler_fetch_workers=1 los
+        # lotes corren de a uno -- si todas las temporalidades quedan debidas
+        # al mismo tiempo (ej. arranque en frio) y se procesaran en orden
+        # alfabetico, M1 (umbral de 15min) caeria detras de D1/H1/H12/H2/H3/H4
+        # y, si esa vuelta tarda mas de 15min con miles de simbolos de por
+        # medio, nunca alcanzaria a refrescarse a tiempo -- el umbral
+        # diferenciado por temporalidad (ver watermark_repository) quedaria
+        # anulado por el orden de ejecucion. El backfill no tiene ese
+        # problema (no hay "deadline" de frescura), asi que se deja como
+        # estaba.
+        sort_key = (lambda r: r.timeframe) if is_backfill else (lambda r: bar_duration_minutes(r.timeframe))
+        rows_sorted = sorted(rows, key=sort_key)
         batches = [
             (timeframe, group_rows[i:i + batch_size])
             for timeframe, group in groupby(rows_sorted, key=lambda r: r.timeframe)
