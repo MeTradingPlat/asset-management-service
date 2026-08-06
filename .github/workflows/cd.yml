@@ -44,6 +44,12 @@ jobs:
         run: |
           if [ -z "$(docker ps -a -q -f name=postgres-historical)" ]; then
             echo "Creating and starting postgres-historical container..."
+            # El host tiene 4 nucleos compartidos entre 15+ contenedores. Sin
+            # limite de CPU, historical-data-service + postgres-historical
+            # llegaron a consumir ~2.8 nucleos ellos solos durante el backfill
+            # (confirmado en vivo: load average 3.95/4, postgres-historical
+            # solo en 190% CPU) dejando casi nada para el resto de servicios.
+            # 1.0 + 1.5 = 2.5 nucleos entre los dos, dejando 1.5 de margen.
             # candles ya pasa los 20M de filas y crece rapido -- shared_buffers/
             # maintenance_work_mem por defecto (128MB/64MB) son los valores de
             # fabrica de Postgres, pensados para instalaciones chicas, sin
@@ -65,6 +71,7 @@ jobs:
               --name "postgres-historical" \
               --network "metradingplat-network" \
               --restart "no" \
+              --cpus "1.5" \
               --memory "2g" \
               --memory-swap "2g" \
               -e POSTGRES_DB="bd_historical" \
@@ -114,6 +121,7 @@ jobs:
             --name "historical-data-service" \
             --network "metradingplat-network" \
             --restart "no" \
+            --cpus "1.0" \
             --memory "512m" \
             --memory-swap "512m" \
             --label project="metradingplat" \
