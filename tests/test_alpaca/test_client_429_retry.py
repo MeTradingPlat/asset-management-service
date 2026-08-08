@@ -24,12 +24,26 @@ def test_429_retries_and_succeeds_using_retry_after_header():
     client = AlpacaClient(bucket)
     with patch("app.alpaca.client.urllib.request.urlopen",
                side_effect=[_http_error(429, "0.01"), _ok_response({"bars": {}})]) as mock_urlopen, \
-         patch("app.alpaca.client.time.sleep") as mock_sleep:
+         patch("app.alpaca.client.time.sleep") as mock_sleep, \
+         patch("app.alpaca.client.random.uniform", return_value=0.0):
         result = client.get_bars(["AAPL"], "D1", __import__("datetime").datetime(2020, 1, 1), __import__("datetime").datetime(2020, 1, 2))
 
     assert result == {"AAPL": []}
     assert mock_urlopen.call_count == 2
     mock_sleep.assert_called_once_with(0.01)
+
+
+def test_429_retry_wait_has_jitter_so_workers_desync():
+    bucket = TokenBucket(capacity=200)
+    client = AlpacaClient(bucket)
+    with patch("app.alpaca.client.urllib.request.urlopen",
+               side_effect=[_http_error(429, "1"), _ok_response({"bars": {}})]), \
+         patch("app.alpaca.client.time.sleep") as mock_sleep, \
+         patch("app.alpaca.client.random.uniform", return_value=0.7) as mock_uniform:
+        client.get_bars(["AAPL"], "D1", __import__("datetime").datetime(2020, 1, 1), __import__("datetime").datetime(2020, 1, 2))
+
+    mock_uniform.assert_called_once_with(0, 1.5)
+    mock_sleep.assert_called_once_with(1.7)
 
 
 def test_429_without_retry_after_header_uses_default():

@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 import re
 import time
 import urllib.error
@@ -20,6 +21,18 @@ logger = logging.getLogger(__name__)
 # propia recomendacion de backoff (docs.alpaca.markets, seccion rate limits).
 _DEFAULT_RETRY_AFTER_SECONDS = 3.0
 _MAX_429_RETRIES = 5
+
+# penalize() usa el mismo blocked_until para TODOS los hilos que comparten
+# el rate limiter -- sin jitter, los workers bloqueados por el mismo 429
+# despiertan practicamente juntos y vuelven a pedirle a Alpaca casi al
+# mismo milisegundo, provocando otro 429 en cadena (confirmado en vivo con
+# scheduler_fetch_workers=3: un 429 nuevo cada ~10-12s pese a que cada
+# reintento individual si conseguia responder). Alpaca recomienda
+# explicitamente "exponential backoff with jitter" para evitar esto
+# (docs/foro de Alpaca sobre manejo de 429) -- el jitter desincroniza a los
+# workers entre si, el numero base (3s) ya alcanzaba para la llamada
+# individual.
+_BURST_JITTER_SECONDS = 1.5
 
 # Los 401 esporadicos en data.alpaca.markets son un problema reconocido del
 # lado de Alpaca, no de credenciales invalidas -- confirmado en su propio
@@ -177,6 +190,7 @@ class AlpacaClient:
                             retry_after = float(header)
                         except ValueError:
                             pass
+                    retry_after += random.uniform(0, _BURST_JITTER_SECONDS)
                     logger.warning("Alpaca 429, esperando %.1fs (intento %d/%d)", retry_after, burst_attempt, _MAX_429_RETRIES)
                     self._rate_limiter.penalize(retry_after)
                     time.sleep(retry_after)
