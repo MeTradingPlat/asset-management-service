@@ -69,6 +69,18 @@ def test_fresh_watermark_not_due():
     assert backfill == [] and steady == []
 
 
+def test_steady_state_paused_while_any_backfill_pending():
+    stale = datetime.now(timezone.utc) - timedelta(hours=17)
+    rows = [
+        (1, "AAPL", "M1", True, None, stale),
+        (2, "MSFT", "D1", False, None, None),
+    ]
+    with patch("app.ingestion.watermark_repository.get_connection", lambda: _fake_get_connection(rows)):
+        backfill, steady = fetch_due_rows()
+    assert len(backfill) == 1 and backfill[0].symbol == "MSFT"
+    assert steady == []
+
+
 def test_daily_and_hourly_timeframes_still_refresh_at_least_once_a_day():
     # D1/H1 tienen ventana DxLink mucho mas larga (285 dias / "todo el
     # historico"), pero el umbral se limita a 1 dia como maximo para que el

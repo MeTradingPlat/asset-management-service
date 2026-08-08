@@ -44,7 +44,15 @@ def _refresh_threshold(timeframe: str) -> timedelta:
 
 def fetch_due_rows() -> tuple[list[DueRow], list[DueRow]]:
     """Devuelve (backfill_pendiente, refresco_incremental_pendiente). D2/D3
-    quedan fuera -- nunca se piden a Alpaca directamente."""
+    quedan fuera -- nunca se piden a Alpaca directamente.
+
+    El refresco incremental se pausa por completo mientras quede backfill
+    pendiente en CUALQUIER simbolo/temporalidad: los dos hilos del scheduler
+    comparten el mismo core/Postgres del host compartido (confirmado en
+    vivo -- subir scheduler_fetch_workers ya deja a postgres-historical en
+    su tope de CPU), asi que se prioriza terminar el backfill inicial antes
+    que la frescura incremental, a costa de que los simbolos activos no se
+    actualicen mientras tanto."""
     now = datetime.now(timezone.utc)
     backfill: list[DueRow] = []
     steady_state: list[DueRow] = []
@@ -71,6 +79,8 @@ def fetch_due_rows() -> tuple[list[DueRow], list[DueRow]]:
                 if last_ingested_at is None or now - last_ingested_at >= threshold:
                     steady_state.append(row)
 
+    if backfill:
+        return backfill, []
     return backfill, steady_state
 
 
