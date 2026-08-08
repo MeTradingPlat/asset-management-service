@@ -55,17 +55,46 @@ def test_429_penalizes_shared_rate_limiter_so_other_threads_back_off_too():
     assert not bucket.try_acquire()
 
 
-def test_non_429_http_error_is_not_retried():
+def test_non_transient_http_error_is_not_retried():
     bucket = TokenBucket(capacity=200)
     client = AlpacaClient(bucket)
-    with patch("app.alpaca.client.urllib.request.urlopen", side_effect=_http_error(500, None)) as mock_urlopen:
+    with patch("app.alpaca.client.urllib.request.urlopen", side_effect=_http_error(404, None)) as mock_urlopen:
         try:
             client.get_bars(["AAPL"], "D1", __import__("datetime").datetime(2020, 1, 1), __import__("datetime").datetime(2020, 1, 2))
             assert False, "expected HTTPError to propagate"
         except urllib.error.HTTPError as e:
-            assert e.code == 500
+            assert e.code == 404
 
     assert mock_urlopen.call_count == 1
+
+
+def test_transient_http_error_retries_and_succeeds():
+    bucket = TokenBucket(capacity=200)
+    client = AlpacaClient(bucket)
+    with patch("app.alpaca.client.urllib.request.urlopen",
+               side_effect=[_http_error(401, None), _ok_response({"bars": {}})]) as mock_urlopen, \
+         patch("app.alpaca.client.time.sleep") as mock_sleep:
+        result = client.get_bars(["AAPL"], "D1", __import__("datetime").datetime(2020, 1, 1), __import__("datetime").datetime(2020, 1, 2))
+
+    assert result == {"AAPL": []}
+    assert mock_urlopen.call_count == 2
+    mock_sleep.assert_called_once()
+
+
+def test_transient_http_error_gives_up_after_max_retries():
+    bucket = TokenBucket(capacity=200)
+    client = AlpacaClient(bucket)
+    errors = [_http_error(500, None)] * 10
+    with patch("app.alpaca.client.urllib.request.urlopen", side_effect=errors) as mock_urlopen, \
+         patch("app.alpaca.client.time.sleep"):
+        try:
+            client.get_bars(["AAPL"], "D1", __import__("datetime").datetime(2020, 1, 1), __import__("datetime").datetime(2020, 1, 2))
+            assert False, "expected HTTPError to propagate after exhausting retries"
+        except urllib.error.HTTPError as e:
+            assert e.code == 500
+
+    from app.alpaca.client import _MAX_TRANSIENT_RETRIES
+    assert mock_urlopen.call_count == _MAX_TRANSIENT_RETRIES + 1
 
 
 def test_429_gives_up_after_max_retries():
