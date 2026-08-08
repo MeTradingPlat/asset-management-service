@@ -21,6 +21,18 @@ logger = logging.getLogger(__name__)
 _DEFAULT_RETRY_AFTER_SECONDS = 3.0
 _MAX_429_RETRIES = 5
 
+# Los 401 esporadicos en data.alpaca.markets son un problema reconocido del
+# lado de Alpaca, no de credenciales invalidas -- confirmado en su propio
+# foro (forum.alpaca.markets/t/persistent-401-unauthorized-on-data-alpaca-
+# markets-trading-api-works-fine), donde recomiendan reintentar. Antes de
+# esto, un 401 tumbaba TODO el lote (hasta 100 simbolos) de una y quedaba
+# marcado con error hasta el siguiente tick de backfill -- que puede tardar
+# dias en volver a esa temporalidad. 5xx y errores de red/timeout entran en
+# el mismo balde por la misma razon: transitorios, no un fallo real del lote.
+_MAX_TRANSIENT_RETRIES = 3
+_TRANSIENT_RETRY_BACKOFF_SECONDS = 2.0
+_TRANSIENT_STATUS_CODES = {401, 500, 502, 503, 504}
+
 # marketdata-service (DxLink/TastyTrade convention) marks preferred shares as
 # "TICKERp" (single series) or "TICKERpX" (series X) -- confirmed live
 # against Alpaca that this was silently returning zero bars for every one of
@@ -121,7 +133,7 @@ class AlpacaClient:
                     "APCA-API-SECRET-KEY": settings.alpaca_api_secret,
                 },
             )
-            data = self._request_with_429_retry(req)
+            data = self._request_with_retry(req)
 
             page_bars: dict[str, list[Bar]] = {}
             for sym, bars in (data.get("bars") or {}).items():
@@ -140,26 +152,46 @@ class AlpacaClient:
             if not page_token:
                 break
 
-    def _request_with_429_retry(self, req: urllib.request.Request) -> dict:
+    def _request_with_retry(self, req: urllib.request.Request) -> dict:
         # Alpaca aplica algun tope de rafaga ademas del promedio/min (ver
         # penalize() en rate_limiter.py) -- un 429 aca frena a TODOS los
         # hilos que comparten el rate limiter via su propio Retry-After, no
         # solo reintenta esta llamada, para no seguir chocando con el mismo
-        # tope desde otro hilo mientras este espera.
-        for attempt in range(_MAX_429_RETRIES + 1):
+        # tope desde otro hilo mientras este espera. Los 401/5xx/red usan un
+        # balde de reintentos aparte (ver _MAX_TRANSIENT_RETRIES arriba).
+        burst_attempt = 0
+        transient_attempt = 0
+        while True:
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     return json.loads(resp.read())
             except urllib.error.HTTPError as e:
-                if e.code != 429 or attempt == _MAX_429_RETRIES:
+                if e.code == 429:
+                    if burst_attempt == _MAX_429_RETRIES:
+                        raise
+                    burst_attempt += 1
+                    retry_after = _DEFAULT_RETRY_AFTER_SECONDS
+                    header = e.headers.get("Retry-After") if e.headers else None
+                    if header:
+                        try:
+                            retry_after = float(header)
+                        except ValueError:
+                            pass
+                    logger.warning("Alpaca 429, esperando %.1fs (intento %d/%d)", retry_after, burst_attempt, _MAX_429_RETRIES)
+                    self._rate_limiter.penalize(retry_after)
+                    time.sleep(retry_after)
+                    continue
+                if e.code in _TRANSIENT_STATUS_CODES and transient_attempt < _MAX_TRANSIENT_RETRIES:
+                    transient_attempt += 1
+                    logger.warning("Alpaca %d, reintentando en %.1fs (intento %d/%d)",
+                                    e.code, _TRANSIENT_RETRY_BACKOFF_SECONDS, transient_attempt, _MAX_TRANSIENT_RETRIES)
+                    time.sleep(_TRANSIENT_RETRY_BACKOFF_SECONDS)
+                    continue
+                raise
+            except (urllib.error.URLError, TimeoutError) as e:
+                if transient_attempt == _MAX_TRANSIENT_RETRIES:
                     raise
-                retry_after = _DEFAULT_RETRY_AFTER_SECONDS
-                header = e.headers.get("Retry-After") if e.headers else None
-                if header:
-                    try:
-                        retry_after = float(header)
-                    except ValueError:
-                        pass
-                logger.warning("Alpaca 429, esperando %.1fs (intento %d/%d)", retry_after, attempt + 1, _MAX_429_RETRIES)
-                self._rate_limiter.penalize(retry_after)
-                time.sleep(retry_after)
+                transient_attempt += 1
+                logger.warning("Alpaca request fallo (%s), reintentando en %.1fs (intento %d/%d)",
+                                e, _TRANSIENT_RETRY_BACKOFF_SECONDS, transient_attempt, _MAX_TRANSIENT_RETRIES)
+                time.sleep(_TRANSIENT_RETRY_BACKOFF_SECONDS)
