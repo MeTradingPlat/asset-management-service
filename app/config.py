@@ -27,6 +27,22 @@ class Settings(BaseSettings):
     # magnitud.
     alpaca_symbols_per_call_backfill: int = 100
     alpaca_symbols_per_call_steady_state: int = 1000
+    # Alpaca no reparte paginas por turnos entre simbolos de una llamada
+    # multi-simbolo -- agota TODAS las paginas del primer simbolo con datos
+    # pendientes antes de pasar al siguiente (confirmado en su propia
+    # documentacion, docs.alpaca.markets/us/reference/stockbars). Para D1
+    # eso no importa (~10-12 simbolos agotan las 10k filas/pagina sin
+    # importar el orden), pero para temporalidades de minuto un solo
+    # simbolo con mucho volumen puede acaparar un lote de 100 durante horas
+    # mientras los otros 99 no avanzan nada. Lote mas chico acota cuantos
+    # quedan "atras de la fila" esperando a ese simbolo pesado.
+    alpaca_symbols_per_call_backfill_minute: int = 10
+    # Alpaca mismo recomienda no pedir velas de minuto para rangos de varios
+    # anios de una sola vez (alpaca.markets/learn/fetch-historical-data).
+    # Fraccionar en ventanas de ~1 anio acorta cada llamada individual,
+    # dejando que el worker se libere y tome el siguiente lote en vez de
+    # quedar atado a una sola cadena de paginacion de horas.
+    backfill_minute_chunk_days: int = 365
 
     scheduler_tick_seconds: int = 30
     # Cuantos lotes (llamadas a Alpaca) corren en paralelo POR hilo del

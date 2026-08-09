@@ -36,5 +36,9 @@ def is_derived(timeframe: str) -> bool:
     return timeframe in DERIVED_TIMEFRAMES
 
 
+def is_minute_timeframe(timeframe: str) -> bool:
+    return bar_duration_minutes(timeframe) < 60
+
+
 def alpaca_native_string(timeframe: str) -> str:
     return ALPACA_NATIVE_TIMEFRAME[timeframe]

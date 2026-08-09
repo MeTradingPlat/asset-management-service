@@ -7,7 +7,7 @@ from itertools import groupby
 from app.alpaca.client import AlpacaClient
 from app.alpaca.rate_limiter import TokenBucket
 from app.config import settings
-from app.domain.timeframes import bar_duration_minutes
+from app.domain.timeframes import bar_duration_minutes, is_minute_timeframe
 from app.ingestion.candle_writer import derive_daily_aggregates, write_bars
 from app.ingestion.watermark_repository import DueRow, fetch_due_rows, update_watermark
 
@@ -82,8 +82,13 @@ class Scheduler:
         # ayuda ahi. Refresco incremental (3 dias) cabe completo en una sola
         # pagina hasta con 1500 simbolos -- lote grande reduce las llamadas
         # necesarias en un orden de magnitud.
-        batch_size = settings.alpaca_symbols_per_call_backfill if is_backfill \
-            else settings.alpaca_symbols_per_call_steady_state
+        def batch_size_for(timeframe: str) -> int:
+            if not is_backfill:
+                return settings.alpaca_symbols_per_call_steady_state
+            if is_minute_timeframe(timeframe):
+                return settings.alpaca_symbols_per_call_backfill_minute
+            return settings.alpaca_symbols_per_call_backfill
+
         kind = "backfill" if is_backfill else "steady-state"
         # steady-state: mas fino primero. Con scheduler_fetch_workers=1 los
         # lotes corren de a uno -- si todas las temporalidades quedan debidas
@@ -98,10 +103,10 @@ class Scheduler:
         sort_key = (lambda r: r.timeframe) if is_backfill else (lambda r: bar_duration_minutes(r.timeframe))
         rows_sorted = sorted(rows, key=sort_key)
         batches = [
-            (timeframe, group_rows[i:i + batch_size])
+            (timeframe, group_rows[i:i + batch_size_for(timeframe)])
             for timeframe, group in groupby(rows_sorted, key=lambda r: r.timeframe)
             for group_rows in (list(group),)
-            for i in range(0, len(group_rows), batch_size)
+            for i in range(0, len(group_rows), batch_size_for(timeframe))
         ]
         total_batches = len(batches)
         processed = 0
@@ -137,15 +142,50 @@ class Scheduler:
         return processed
 
     def _fetch_and_write_batch(self, batch: list[DueRow], timeframe: str, is_backfill: bool) -> None:
-        symbols = [r.symbol for r in batch]
-        by_symbol = {r.symbol: r for r in batch}
         now = datetime.now(timezone.utc)
 
-        if is_backfill:
-            oldest_known = min((r.oldest_ingested_at for r in batch if r.oldest_ingested_at), default=now)
-            start, end = _BACKFILL_START, oldest_known
-        else:
-            start, end = now - timedelta(days=3), now
+        if not is_backfill:
+            self._fetch_and_write_range(batch, timeframe, now - timedelta(days=3), now,
+                                         is_backfill=False, allow_complete=True)
+            return
+
+        oldest_known = min((r.oldest_ingested_at for r in batch if r.oldest_ingested_at), default=now)
+
+        if not is_minute_timeframe(timeframe):
+            self._fetch_and_write_range(batch, timeframe, _BACKFILL_START, oldest_known,
+                                         is_backfill=True, allow_complete=True)
+            return
+
+        # Alpaca no reparte paginas por turnos entre simbolos de una llamada
+        # multi-simbolo -- agota TODAS las paginas del primero con datos
+        # pendientes antes de pasar al siguiente (docs.alpaca.markets/us/
+        # reference/stockbars). Para temporalidades de minuto, pedir los 7+
+        # anios completos de una deja un simbolo pesado acaparando el lote
+        # entero durante horas mientras el resto no avanza nada (confirmado
+        # en vivo). Se fracciona en ventanas de ~1 anio: cada ventana es una
+        # llamada corta, asi que el worker se libera seguido en vez de
+        # quedar atado a una cadena de paginacion de horas.
+        chunk = timedelta(days=settings.backfill_minute_chunk_days)
+        chunk_end = oldest_known
+        while chunk_end > _BACKFILL_START:
+            if self._stop.is_set():
+                return
+            chunk_start = max(_BACKFILL_START, chunk_end - chunk)
+            # "Completo" solo se marca en la ventana que de verdad llega
+            # hasta _BACKFILL_START -- una ventana intermedia vacia (ej. el
+            # simbolo tuvo una suspension de cotizacion ese anio) no
+            # significa que no haya historia mas atras.
+            is_final_chunk = chunk_start <= _BACKFILL_START
+            self._fetch_and_write_range(batch, timeframe, chunk_start, chunk_end,
+                                         is_backfill=True, allow_complete=is_final_chunk)
+            chunk_end = chunk_start
+
+    def _fetch_and_write_range(
+        self, batch: list[DueRow], timeframe: str, start: datetime, end: datetime,
+        is_backfill: bool, allow_complete: bool,
+    ) -> None:
+        symbols = [r.symbol for r in batch]
+        by_symbol = {r.symbol: r for r in batch}
 
         # Confirmado en produccion: acumular TODAS las paginas de un backfill
         # de minutos (7 anios, cientos de paginas) en memoria antes de
@@ -162,7 +202,7 @@ class Scheduler:
         def touched_page(page_bars: dict[str, list]) -> None:
             relevant = {sym: bars for sym, bars in page_bars.items() if sym in by_symbol}
             touched.update(relevant)
-            self._write_page(relevant, by_symbol, timeframe, is_backfill)
+            self._write_page(relevant, by_symbol, timeframe, is_backfill, allow_complete, start)
 
         try:
             self._alpaca.get_bars_streaming(symbols, timeframe, start, end, touched_page)
@@ -177,10 +217,11 @@ class Scheduler:
         # tiene mas historia para ellos en este rango.
         leftovers = {sym: [] for sym in by_symbol if sym not in touched}
         if leftovers:
-            self._write_page(leftovers, by_symbol, timeframe, is_backfill)
+            self._write_page(leftovers, by_symbol, timeframe, is_backfill, allow_complete, start)
 
     def _write_page(
-        self, page_bars: dict[str, list], by_symbol: dict[str, DueRow], timeframe: str, is_backfill: bool,
+        self, page_bars: dict[str, list], by_symbol: dict[str, DueRow], timeframe: str,
+        is_backfill: bool, allow_complete: bool, range_start: datetime,
     ) -> None:
         # Escribir cada simbolo es espera de I/O (conexion + upsert + a
         # veces re-lectura para derivar D2/D3), no trabajo de CPU -- hacerlo
@@ -190,7 +231,8 @@ class Scheduler:
         # (backfill + steady-state) a la vez, mas margen para la API HTTP.
         with concurrent.futures.ThreadPoolExecutor(max_workers=settings.scheduler_write_workers) as executor:
             futures = {
-                executor.submit(self._write_symbol_result, symbol, bars, by_symbol.get(symbol), timeframe, is_backfill): symbol
+                executor.submit(self._write_symbol_result, symbol, bars, by_symbol.get(symbol), timeframe,
+                                 is_backfill, allow_complete, range_start): symbol
                 for symbol, bars in page_bars.items()
             }
             for future in concurrent.futures.as_completed(futures):
@@ -201,7 +243,8 @@ class Scheduler:
                     logger.error("Failed to write %s bars for %s: %s", timeframe, symbol, e)
 
     def _write_symbol_result(
-        self, symbol: str, bars: list, row: DueRow | None, timeframe: str, is_backfill: bool,
+        self, symbol: str, bars: list, row: DueRow | None, timeframe: str,
+        is_backfill: bool, allow_complete: bool, range_start: datetime,
     ) -> None:
         if row is None:
             return
@@ -218,8 +261,15 @@ class Scheduler:
             oldest = min(b.ts for b in bars)
             update_watermark(row.symbol_id, timeframe, newest_ts=newest, oldest_ts=oldest,
                               backfill_complete=(False if is_backfill else None))
-        elif is_backfill:
-            # Pagina vacia = ya no hay mas historia disponible en Alpaca para este simbolo.
+        elif is_backfill and allow_complete:
+            # Pagina vacia en la ventana que llega hasta _BACKFILL_START =
+            # ya no hay mas historia disponible en Alpaca para este simbolo.
             update_watermark(row.symbol_id, timeframe, newest_ts=None, oldest_ts=None, backfill_complete=True)
             if timeframe == "D1":
                 derive_daily_aggregates(row.symbol_id)
+        elif is_backfill:
+            # Ventana intermedia vacia (fraccionamiento por anio) -- avanza
+            # el watermark hasta el inicio de esta ventana para que la
+            # siguiente iteracion siga mas atras en el tiempo, SIN marcar
+            # completo (ver comentario en el llamador sobre por que).
+            update_watermark(row.symbol_id, timeframe, newest_ts=None, oldest_ts=range_start)
