@@ -1,3 +1,10 @@
+-- TimescaleDB: comprime automaticamente lo viejo (10-20x mas chico para
+-- series de tiempo tipo velas, confirmado -- 65GB sin comprimir llegaron a
+-- llenar el disco del host compartido incluso podando la retencion). El
+-- usuario de conexion es el mismo que crea la BD (superuser por defecto de
+-- la imagen postgres oficial), asi que puede crear la extension.
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+
 CREATE TABLE IF NOT EXISTS tracked_symbols (
     symbol_id       SERIAL PRIMARY KEY,
     symbol          VARCHAR(20) NOT NULL UNIQUE,
@@ -35,6 +42,27 @@ CREATE TABLE IF NOT EXISTS candles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_candles_symbol_tf ON candles (symbol_id, timeframe);
+
+-- Hypertable particionada por ts (columna de tiempo, ya forma parte de la
+-- PK). Chunks de 7 dias: coincide con el buffer de compresion de abajo, y
+-- es el default recomendado por TimescaleDB para este volumen. if_not_exists
+-- hace esto seguro de re-correr en cada arranque del servicio.
+SELECT create_hypertable('candles', 'ts', chunk_time_interval => INTERVAL '7 days', if_not_exists => TRUE);
+
+-- segmentby agrupa la compresion por serie (mismo simbolo+temporalidad
+-- comprime junto, que es donde los valores se parecen entre si y comprimen
+-- mejor) en vez de por chunk completo mezclando todos los simbolos.
+ALTER TABLE candles SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'symbol_id, timeframe',
+    timescaledb.compress_orderby = 'ts DESC'
+);
+
+-- Los UPSERTs (ON CONFLICT DO UPDATE) que hace write_bars() solo funcionan
+-- sobre chunks sin comprimir -- el buffer de 7 dias deja tiempo de sobra
+-- para que terminen las correcciones/reintentos antes de que ese chunk se
+-- comprima solo.
+SELECT add_compression_policy('candles', INTERVAL '7 days', if_not_exists => TRUE);
 
 -- candles recibe UPSERTs (ON CONFLICT DO UPDATE) constantes durante el
 -- backfill -- cada UPDATE deja una tupla muerta. Con el default de Postgres

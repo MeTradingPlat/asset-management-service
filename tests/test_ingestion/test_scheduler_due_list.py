@@ -55,7 +55,8 @@ def test_stale_watermark_goes_to_steady_state():
     # last_ingested_at de hace 17 horas, ya deberia estar due.
     stale = datetime.now(timezone.utc) - timedelta(hours=17)
     rows = [(1, "AAPL", "M1", True, None, stale)]
-    with patch("app.ingestion.watermark_repository.get_connection", lambda: _fake_get_connection(rows)):
+    with patch("app.ingestion.watermark_repository.get_connection", lambda: _fake_get_connection(rows)), \
+         patch("app.config.settings.enabled_timeframes", ["M1"]):
         backfill, steady = fetch_due_rows()
     assert backfill == []
     assert len(steady) == 1 and steady[0].symbol == "AAPL"
@@ -87,7 +88,8 @@ def test_daily_and_hourly_timeframes_still_refresh_at_least_once_a_day():
     # archivo nunca se quede desactualizado por mucho tiempo.
     stale = datetime.now(timezone.utc) - timedelta(hours=25)
     rows = [(1, "AAPL", "D1", True, None, stale), (2, "MSFT", "H1", True, None, stale)]
-    with patch("app.ingestion.watermark_repository.get_connection", lambda: _fake_get_connection(rows)):
+    with patch("app.ingestion.watermark_repository.get_connection", lambda: _fake_get_connection(rows)), \
+         patch("app.config.settings.enabled_timeframes", ["D1", "H1"]):
         backfill, steady = fetch_due_rows()
     assert backfill == []
     assert {r.symbol for r in steady} == {"AAPL", "MSFT"}

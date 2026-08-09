@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from app.config import settings
 from app.db.engine import get_connection
 from app.domain.timeframes import bar_duration_minutes, is_derived
 
@@ -70,6 +71,8 @@ def fetch_due_rows() -> tuple[list[DueRow], list[DueRow]]:
             )
             for symbol_id, symbol, timeframe, backfill_complete, oldest_ingested_at, last_ingested_at in cur.fetchall():
                 if is_derived(timeframe):
+                    continue
+                if timeframe not in settings.enabled_timeframes:
                     continue
                 row = DueRow(symbol_id, symbol, timeframe, backfill_complete, oldest_ingested_at)
                 if not backfill_complete:

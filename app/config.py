@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     # escritura.
     scheduler_write_workers: int = 2
     db_pool_max_connections: int = 8
+    # Disco del host compartido agotado con las 19 temporalidades activas a
+    # la vez (confirmado en vivo: 65GB, 99.5% lleno, Postgres crasheando en
+    # loop de recovery). Mientras se consigue mas capacidad, el servicio
+    # solo mantiene D1 (barata, ~pocas decenas de MB por simbolo/anio) --
+    # las demas quedan con toda su logica intacta (retention.py, chunking
+    # por anio en scheduler.py), simplemente fuera de esta lista. Volver a
+    # "M1,M2,M3,M5,M10,M15,M30,M45,H1,H2,H3,H4,H12,D1,W1,MO1,MO3,MO6,Y1"
+    # cuando haya espacio reactiva todo sin tocar nada mas.
+    enabled_timeframes: list[str] = ["D1"]
 
     log_level: str = "INFO"
 

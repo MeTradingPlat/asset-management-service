@@ -78,7 +78,8 @@ jobs:
               -e POSTGRES_USER="user_historical" \
               -e POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
               -v postgres_historical_data:/var/lib/postgresql/data \
-              postgres:15-alpine \
+              timescale/timescaledb:latest-pg15 \
+              -c shared_preload_libraries=timescaledb \
               -c shared_buffers=1GB \
               -c effective_cache_size=1536MB \
               -c work_mem=32MB \
