@@ -27,7 +27,7 @@ def test_minute_backfill_stays_within_the_retention_window():
         on_page({"AAPL": [_bar()]})
 
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=fake_streaming), \
-         patch("app.ingestion.scheduler.write_bars"), \
+         patch("app.ingestion.scheduler.write_bars", side_effect=lambda symbol_id, timeframe, bars, **kw: bars), \
          patch("app.ingestion.scheduler.update_watermark"):
         scheduler._fetch_and_write_batch([row], "M1", is_backfill=True)
 
@@ -62,7 +62,7 @@ def test_empty_intermediate_chunk_does_not_mark_complete():
         pass  # ningun trozo trae datos -- simula un simbolo suspendido/joven
 
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=fake_streaming), \
-         patch("app.ingestion.scheduler.write_bars"), \
+         patch("app.ingestion.scheduler.write_bars", side_effect=lambda symbol_id, timeframe, bars, **kw: bars), \
          patch("app.config.settings.backfill_minute_chunk_days", 20), \
          patch("app.ingestion.scheduler.update_watermark") as mock_watermark:
         scheduler._fetch_and_write_batch([row], "M1", is_backfill=True)
@@ -111,7 +111,7 @@ def test_non_minute_timeframe_still_uses_a_single_call():
         on_page({"AAPL": [_bar()]})
 
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=fake_streaming), \
-         patch("app.ingestion.scheduler.write_bars"), \
+         patch("app.ingestion.scheduler.write_bars", side_effect=lambda symbol_id, timeframe, bars, **kw: bars), \
          patch("app.ingestion.scheduler.update_watermark"):
         scheduler._fetch_and_write_batch([row], "D1", is_backfill=True)
 

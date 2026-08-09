@@ -26,7 +26,8 @@ def test_all_symbols_in_batch_get_written():
     rows = [_row(sym, i) for i, sym in enumerate(["AAPL", "MSFT", "TSLA"])]
     bars_by_symbol = {sym: [_bar()] for sym in ["AAPL", "MSFT", "TSLA"]}
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming(bars_by_symbol)), \
-         patch("app.ingestion.scheduler.write_bars") as mock_write, \
+         patch("app.ingestion.scheduler.write_bars",
+               side_effect=lambda symbol_id, timeframe, bars, **kw: bars) as mock_write, \
          patch("app.ingestion.scheduler.update_watermark"):
         scheduler._fetch_and_write_batch(rows, "D1", is_backfill=True)
 
@@ -39,9 +40,10 @@ def test_one_symbol_failing_does_not_block_the_others():
     rows = [_row(sym, i) for i, sym in enumerate(["AAPL", "MSFT", "TSLA"])]
     bars_by_symbol = {sym: [_bar()] for sym in ["AAPL", "MSFT", "TSLA"]}
 
-    def flaky_write(symbol_id, *a, **kw):
+    def flaky_write(symbol_id, timeframe, bars, **kw):
         if symbol_id == 1:
             raise RuntimeError("DB write boom")
+        return bars
 
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming(bars_by_symbol)), \
          patch("app.ingestion.scheduler.write_bars", side_effect=flaky_write) as mock_write, \

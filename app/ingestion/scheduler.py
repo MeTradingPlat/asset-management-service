@@ -274,10 +274,10 @@ class Scheduler:
         # real: una llamada a Alpaca de 100 simbolos tarda ~10s, pero el
         # batch completo tardaba minutos). Se difiere a una sola vez, mas
         # abajo, cuando el backfill de ESE simbolo de verdad termina.
-        write_bars(row.symbol_id, timeframe, bars, derive=not is_backfill)
-        if bars:
-            newest = max(b.ts for b in bars)
-            oldest = min(b.ts for b in bars)
+        written = write_bars(row.symbol_id, timeframe, bars, derive=not is_backfill)
+        if written:
+            newest = max(b.ts for b in written)
+            oldest = min(b.ts for b in written)
             update_watermark(row.symbol_id, timeframe, newest_ts=newest, oldest_ts=oldest,
                               backfill_complete=(False if is_backfill else None))
         elif is_backfill and allow_complete:

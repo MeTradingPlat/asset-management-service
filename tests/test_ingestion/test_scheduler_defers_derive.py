@@ -26,7 +26,8 @@ def test_backfill_batch_skips_derive_while_still_receiving_bars():
     scheduler = Scheduler()
     row = _row("AAPL")
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming([{"AAPL": [_bar()]}])), \
-         patch("app.ingestion.scheduler.write_bars") as mock_write, \
+         patch("app.ingestion.scheduler.write_bars",
+               side_effect=lambda symbol_id, timeframe, bars, **kw: bars) as mock_write, \
          patch("app.ingestion.scheduler.derive_daily_aggregates") as mock_derive, \
          patch("app.ingestion.scheduler.update_watermark"):
         scheduler._fetch_and_write_batch([row], "D1", is_backfill=True)
@@ -40,7 +41,8 @@ def test_backfill_batch_derives_once_when_symbol_history_is_exhausted():
     scheduler = Scheduler()
     row = _row("AAPL")
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming([])), \
-         patch("app.ingestion.scheduler.write_bars") as mock_write, \
+         patch("app.ingestion.scheduler.write_bars",
+               side_effect=lambda symbol_id, timeframe, bars, **kw: bars) as mock_write, \
          patch("app.ingestion.scheduler.derive_daily_aggregates") as mock_derive, \
          patch("app.ingestion.scheduler.update_watermark"):
         scheduler._fetch_and_write_batch([row], "D1", is_backfill=True)
@@ -52,7 +54,8 @@ def test_steady_state_batch_still_derives_every_time():
     scheduler = Scheduler()
     row = _row("AAPL")
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming([{"AAPL": [_bar()]}])), \
-         patch("app.ingestion.scheduler.write_bars") as mock_write, \
+         patch("app.ingestion.scheduler.write_bars",
+               side_effect=lambda symbol_id, timeframe, bars, **kw: bars) as mock_write, \
          patch("app.ingestion.scheduler.derive_daily_aggregates") as mock_derive, \
          patch("app.ingestion.scheduler.update_watermark"):
         scheduler._fetch_and_write_batch([row], "D1", is_backfill=False)

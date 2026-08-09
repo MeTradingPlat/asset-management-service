@@ -19,16 +19,21 @@ _UPSERT_SQL = """
 
 def write_bars(
     symbol_id: int, timeframe: str, bars: list[Bar], source: str = "alpaca_native", derive: bool = True,
-) -> None:
+) -> list[Bar]:
     """derive=False salta el recalculo de D2/D3 tras escribir D1 -- usado
     durante el backfill, donde cada batch escribe solo una porcion parcial
     del historial de un simbolo (releer y regrupar TODO el D1 acumulado en
     cada una de esas escrituras parciales es trabajo repetido que crece con
     cada tick, ver Scheduler._fetch_and_write_batch, que llama a
     derive_daily_aggregates() una sola vez cuando el backfill de ese simbolo
-    de verdad termina)."""
+    de verdad termina).
+
+    Devuelve las barras REALMENTE escritas (ya normalizadas para D1) -- el
+    llamador debe derivar oldest/newest de este valor de retorno, no de los
+    `bars` crudos que paso, o el watermark queda con el timestamp de Alpaca
+    sin normalizar (medianoche NY, no medianoche UTC como candles.ts)."""
     if not bars:
-        return
+        return []
     if timeframe == "D1":
         bars = [
             Bar(ts=normalize_daily_timestamp(b.ts), open=b.open, high=b.high, low=b.low, close=b.close,
@@ -46,6 +51,8 @@ def write_bars(
 
     if timeframe == "D1" and derive:
         derive_daily_aggregates(symbol_id)
+
+    return bars
 
 
 def derive_daily_aggregates(symbol_id: int) -> None:

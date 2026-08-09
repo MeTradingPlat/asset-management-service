@@ -36,7 +36,8 @@ def test_each_page_is_written_as_it_arrives_not_buffered():
         writes_seen_during_streaming.append(mock_write.call_count)
 
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=fake_streaming), \
-         patch("app.ingestion.scheduler.write_bars") as mock_write, \
+         patch("app.ingestion.scheduler.write_bars",
+               side_effect=lambda symbol_id, timeframe, bars, **kw: bars) as mock_write, \
          patch("app.ingestion.scheduler.update_watermark"):
         scheduler._fetch_and_write_batch([row], "D1", is_backfill=True)
 
@@ -51,7 +52,7 @@ def test_watermark_range_merges_across_pages_for_the_same_symbol():
     pages = [{"AAPL": [_bar(newer)]}, {"AAPL": [_bar(older)]}]
 
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming(pages)), \
-         patch("app.ingestion.scheduler.write_bars"), \
+         patch("app.ingestion.scheduler.write_bars", side_effect=lambda symbol_id, timeframe, bars, **kw: bars), \
          patch("app.ingestion.scheduler.update_watermark") as mock_watermark:
         scheduler._fetch_and_write_batch([row], "D1", is_backfill=True)
 
@@ -68,7 +69,8 @@ def test_symbol_missing_from_every_page_is_treated_as_exhausted():
     pages = [{"AAPL": [_bar(datetime(2020, 1, 1, tzinfo=timezone.utc))]}]
 
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=_streaming(pages)), \
-         patch("app.ingestion.scheduler.write_bars") as mock_write, \
+         patch("app.ingestion.scheduler.write_bars",
+               side_effect=lambda symbol_id, timeframe, bars, **kw: bars) as mock_write, \
          patch("app.ingestion.scheduler.derive_daily_aggregates") as mock_derive, \
          patch("app.ingestion.scheduler.update_watermark"):
         scheduler._fetch_and_write_batch(rows, "D1", is_backfill=True)
