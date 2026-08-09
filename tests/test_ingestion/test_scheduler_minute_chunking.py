@@ -74,6 +74,32 @@ def test_empty_intermediate_chunk_does_not_mark_complete():
     assert calls[-1].kwargs.get("backfill_complete") is True
 
 
+def test_re_fetch_excludes_already_known_oldest_bar():
+    # Bug real observado en produccion: si el rango pedido incluye
+    # (inclusive) la barra mas vieja que ya se tiene, y la historia real del
+    # simbolo termina justo ahi (IPO reciente, cambio de ticker), Alpaca
+    # vuelve a devolver esa misma barra para siempre -- nunca llega un
+    # "vacio" genuino y el simbolo se queda pegado sin avanzar (confirmado
+    # en vivo: 5,284/13,132 simbolos de D1 atascados horas re-pidiendo la
+    # misma barra). El end pedido a Alpaca debe ser estrictamente anterior
+    # a la barra mas vieja ya conocida.
+    scheduler = Scheduler()
+    known_oldest = datetime(2021, 8, 11, 4, 0, tzinfo=timezone.utc)
+    row = _row("AAPL", oldest_ingested_at=known_oldest, timeframe="D1")
+
+    def fake_streaming(symbols, timeframe, start, end, on_page):
+        assert end < known_oldest
+
+    with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=fake_streaming), \
+         patch("app.ingestion.scheduler.update_watermark") as mock_watermark:
+        scheduler._fetch_and_write_batch([row], "D1", is_backfill=True)
+
+    # Respuesta genuinamente vacia (nada antes de known_oldest) -- ahora si
+    # se marca completo en vez de quedar pegado reintentando lo mismo.
+    mock_watermark.assert_called_once()
+    assert mock_watermark.call_args.kwargs["backfill_complete"] is True
+
+
 def test_non_minute_timeframe_still_uses_a_single_call():
     scheduler = Scheduler()
     now = datetime.now(timezone.utc)

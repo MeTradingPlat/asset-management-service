@@ -160,8 +160,18 @@ class Scheduler:
                 update_watermark(row.symbol_id, timeframe, newest_ts=None, oldest_ts=None, backfill_complete=True)
             return
 
+        # Exclusivo de la barra mas vieja que ya tenemos -- pedir con
+        # end=oldest_known (inclusive) hace que Alpaca vuelva a incluirla en
+        # la respuesta para siempre cuando la historia real del simbolo
+        # termina justo ahi (ej. IPO reciente, cambio de ticker) en vez de
+        # extenderse mas alla de toda la ventana: nunca llega un "vacio"
+        # genuino, asi que nunca se marca completo (confirmado en vivo:
+        # 5,284/13,132 simbolos de D1 atascados horas re-pidiendo la misma
+        # barra sin avanzar).
+        fetch_end = oldest_known - timedelta(microseconds=1)
+
         if not is_minute_timeframe(timeframe):
-            self._fetch_and_write_range(batch, timeframe, window_start, oldest_known,
+            self._fetch_and_write_range(batch, timeframe, window_start, fetch_end,
                                          is_backfill=True, allow_complete=True)
             return
 
@@ -175,7 +185,7 @@ class Scheduler:
         # es una llamada corta, asi que el worker se libera seguido en vez
         # de quedar atado a una cadena de paginacion larga.
         chunk = timedelta(days=settings.backfill_minute_chunk_days)
-        chunk_end = oldest_known
+        chunk_end = fetch_end
         while chunk_end > window_start:
             if self._stop.is_set():
                 return
