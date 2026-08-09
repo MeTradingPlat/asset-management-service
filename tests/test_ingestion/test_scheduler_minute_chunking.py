@@ -1,8 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from app.domain.aggregation import Bar
-from app.ingestion.scheduler import Scheduler, _BACKFILL_START
+from app.domain.retention import RETENTION_DAYS
+from app.ingestion.scheduler import Scheduler
 from app.ingestion.watermark_repository import DueRow
 
 
@@ -15,9 +16,10 @@ def _bar() -> Bar:
     return Bar(ts=datetime.now(timezone.utc), open=1, high=1, low=1, close=1, volume=1)
 
 
-def test_minute_backfill_splits_into_yearly_windows():
+def test_minute_backfill_stays_within_the_retention_window():
     scheduler = Scheduler()
-    row = _row("AAPL", oldest_ingested_at=datetime(2021, 6, 1, tzinfo=timezone.utc))
+    now = datetime.now(timezone.utc)
+    row = _row("AAPL", oldest_ingested_at=now)
     ranges_requested = []
 
     def fake_streaming(symbols, timeframe, start, end, on_page):
@@ -29,56 +31,53 @@ def test_minute_backfill_splits_into_yearly_windows():
          patch("app.ingestion.scheduler.update_watermark"):
         scheduler._fetch_and_write_batch([row], "M1", is_backfill=True)
 
-    # 2021-06-01 -> 2018-01-01 en ventanas de 365 dias: 4 llamadas, cada una
-    # mas atras en el tiempo, la ultima tocando exactamente _BACKFILL_START.
-    assert len(ranges_requested) == 4
-    assert ranges_requested[0][1] == datetime(2021, 6, 1, tzinfo=timezone.utc)
-    assert ranges_requested[-1][0] == _BACKFILL_START
-    for i in range(len(ranges_requested) - 1):
-        assert ranges_requested[i][0] == ranges_requested[i + 1][1]
+    # M1 solo guarda RETENTION_DAYS["M1"] dias, no 7.5 anios completos.
+    assert len(ranges_requested) == 1
+    oldest_requested = ranges_requested[0][0]
+    assert now - oldest_requested <= timedelta(days=RETENTION_DAYS["M1"] + 1)
 
 
-def test_empty_intermediate_window_does_not_mark_complete():
+def test_symbol_already_within_retention_window_skips_alpaca_entirely():
     scheduler = Scheduler()
-    row = _row("AAPL", oldest_ingested_at=datetime(2021, 6, 1, tzinfo=timezone.utc))
+    now = datetime.now(timezone.utc)
+    # Ya tiene datos mas atras de lo que la ventana de retencion pide (ej.
+    # quedo de una ventana vieja mas larga) -- no hace falta pedir nada.
+    row = _row("AAPL", oldest_ingested_at=now - timedelta(days=RETENTION_DAYS["M1"] + 10))
+
+    with patch.object(scheduler._alpaca, "get_bars_streaming") as mock_streaming, \
+         patch("app.ingestion.scheduler.update_watermark") as mock_watermark:
+        scheduler._fetch_and_write_batch([row], "M1", is_backfill=True)
+
+    mock_streaming.assert_not_called()
+    mock_watermark.assert_called_once()
+    assert mock_watermark.call_args.kwargs["backfill_complete"] is True
+
+
+def test_empty_intermediate_chunk_does_not_mark_complete():
+    scheduler = Scheduler()
+    now = datetime.now(timezone.utc)
+    row = _row("AAPL", oldest_ingested_at=now)
 
     def fake_streaming(symbols, timeframe, start, end, on_page):
-        pass  # ninguna ventana trae datos -- simula un simbolo suspendido/joven
+        pass  # ningun trozo trae datos -- simula un simbolo suspendido/joven
 
     with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=fake_streaming), \
          patch("app.ingestion.scheduler.write_bars"), \
+         patch("app.config.settings.backfill_minute_chunk_days", 20), \
          patch("app.ingestion.scheduler.update_watermark") as mock_watermark:
         scheduler._fetch_and_write_batch([row], "M1", is_backfill=True)
 
     calls = mock_watermark.call_args_list
-    # Ninguna llamada intermedia marca completo...
+    assert len(calls) > 1  # con trozos de 20 dias, 60 dias de ventana se parte en varios
     for call in calls[:-1]:
         assert call.kwargs.get("backfill_complete") is not True
-    # ...solo la ultima, que es la que de verdad llega a _BACKFILL_START.
     assert calls[-1].kwargs.get("backfill_complete") is True
-
-
-def test_final_empty_window_marks_complete_and_derives_for_d1_only():
-    scheduler = Scheduler()
-    row = _row("AAPL", oldest_ingested_at=datetime(2018, 6, 1, tzinfo=timezone.utc))
-
-    def fake_streaming(symbols, timeframe, start, end, on_page):
-        pass
-
-    with patch.object(scheduler._alpaca, "get_bars_streaming", side_effect=fake_streaming), \
-         patch("app.ingestion.scheduler.write_bars"), \
-         patch("app.ingestion.scheduler.derive_daily_aggregates") as mock_derive, \
-         patch("app.ingestion.scheduler.update_watermark") as mock_watermark:
-        scheduler._fetch_and_write_batch([row], "M1", is_backfill=True)
-
-    mock_watermark.assert_called_once()
-    assert mock_watermark.call_args.kwargs["backfill_complete"] is True
-    mock_derive.assert_not_called()  # M1 no deriva D2/D3, solo D1
 
 
 def test_non_minute_timeframe_still_uses_a_single_call():
     scheduler = Scheduler()
-    row = _row("AAPL", timeframe="D1")
+    now = datetime.now(timezone.utc)
+    row = _row("AAPL", oldest_ingested_at=now, timeframe="D1")
     calls = []
 
     def fake_streaming(symbols, timeframe, start, end, on_page):
@@ -91,4 +90,4 @@ def test_non_minute_timeframe_still_uses_a_single_call():
         scheduler._fetch_and_write_batch([row], "D1", is_backfill=True)
 
     assert len(calls) == 1
-    assert calls[0][0] == _BACKFILL_START
+    assert now - calls[0][0] <= timedelta(days=RETENTION_DAYS["D1"] + 1)

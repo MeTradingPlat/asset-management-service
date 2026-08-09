@@ -7,13 +7,12 @@ from itertools import groupby
 from app.alpaca.client import AlpacaClient
 from app.alpaca.rate_limiter import TokenBucket
 from app.config import settings
+from app.domain.retention import retention_start
 from app.domain.timeframes import bar_duration_minutes, is_minute_timeframe
 from app.ingestion.candle_writer import derive_daily_aggregates, write_bars
 from app.ingestion.watermark_repository import DueRow, fetch_due_rows, update_watermark
 
 logger = logging.getLogger(__name__)
-
-_BACKFILL_START = datetime(2018, 1, 1, tzinfo=timezone.utc)  # ~7+ anios atras, Alpaca recorta solo si no tiene mas
 
 
 class Scheduler:
@@ -150,32 +149,42 @@ class Scheduler:
             return
 
         oldest_known = min((r.oldest_ingested_at for r in batch if r.oldest_ingested_at), default=now)
+        window_start = retention_start(timeframe, now)
+
+        if oldest_known <= window_start:
+            # Ya se tiene todo lo que la ventana de retencion de esta
+            # temporalidad pide (ej. quedo backfilleado con una ventana mas
+            # larga antes de acortarla) -- no hay nada nuevo que pedirle a
+            # Alpaca, solo falta que quede marcado.
+            for row in batch:
+                update_watermark(row.symbol_id, timeframe, newest_ts=None, oldest_ts=None, backfill_complete=True)
+            return
 
         if not is_minute_timeframe(timeframe):
-            self._fetch_and_write_range(batch, timeframe, _BACKFILL_START, oldest_known,
+            self._fetch_and_write_range(batch, timeframe, window_start, oldest_known,
                                          is_backfill=True, allow_complete=True)
             return
 
         # Alpaca no reparte paginas por turnos entre simbolos de una llamada
         # multi-simbolo -- agota TODAS las paginas del primero con datos
         # pendientes antes de pasar al siguiente (docs.alpaca.markets/us/
-        # reference/stockbars). Para temporalidades de minuto, pedir los 7+
-        # anios completos de una deja un simbolo pesado acaparando el lote
-        # entero durante horas mientras el resto no avanza nada (confirmado
-        # en vivo). Se fracciona en ventanas de ~1 anio: cada ventana es una
-        # llamada corta, asi que el worker se libera seguido en vez de
-        # quedar atado a una cadena de paginacion de horas.
+        # reference/stockbars). Con ventanas de retencion cortas esto ya
+        # colapsa a una sola llamada en la mayoria de los casos (ver
+        # RETENTION_DAYS), pero se deja el fraccionamiento por si alguna
+        # ventana crece mas alla de lo que cabe en una pagina -- cada trozo
+        # es una llamada corta, asi que el worker se libera seguido en vez
+        # de quedar atado a una cadena de paginacion larga.
         chunk = timedelta(days=settings.backfill_minute_chunk_days)
         chunk_end = oldest_known
-        while chunk_end > _BACKFILL_START:
+        while chunk_end > window_start:
             if self._stop.is_set():
                 return
-            chunk_start = max(_BACKFILL_START, chunk_end - chunk)
-            # "Completo" solo se marca en la ventana que de verdad llega
-            # hasta _BACKFILL_START -- una ventana intermedia vacia (ej. el
-            # simbolo tuvo una suspension de cotizacion ese anio) no
-            # significa que no haya historia mas atras.
-            is_final_chunk = chunk_start <= _BACKFILL_START
+            chunk_start = max(window_start, chunk_end - chunk)
+            # "Completo" solo se marca en el trozo que de verdad llega hasta
+            # el inicio de la ventana -- un trozo intermedio vacio (ej. el
+            # simbolo tuvo una suspension de cotizacion) no significa que no
+            # haya historia mas atras dentro de la ventana.
+            is_final_chunk = chunk_start <= window_start
             self._fetch_and_write_range(batch, timeframe, chunk_start, chunk_end,
                                          is_backfill=True, allow_complete=is_final_chunk)
             chunk_end = chunk_start
