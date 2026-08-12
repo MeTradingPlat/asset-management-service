@@ -63,13 +63,13 @@ def fetch_due_rows() -> tuple[list[DueRow], list[DueRow]]:
             cur.execute(
                 """
                 SELECT ts.symbol_id, ts.symbol, w.timeframe, w.backfill_complete,
-                       w.oldest_ingested_at, w.last_ingested_at
+                       w.oldest_ingested_at, w.last_checked_at
                 FROM watermarks w
                 JOIN tracked_symbols ts ON ts.symbol_id = w.symbol_id
                 WHERE ts.is_active = TRUE
                 """
             )
-            for symbol_id, symbol, timeframe, backfill_complete, oldest_ingested_at, last_ingested_at in cur.fetchall():
+            for symbol_id, symbol, timeframe, backfill_complete, oldest_ingested_at, last_checked_at in cur.fetchall():
                 if is_derived(timeframe):
                     continue
                 if timeframe not in settings.enabled_timeframes:
@@ -79,7 +79,16 @@ def fetch_due_rows() -> tuple[list[DueRow], list[DueRow]]:
                     backfill.append(row)
                     continue
                 threshold = _refresh_threshold(timeframe)
-                if last_ingested_at is None or now - last_ingested_at >= threshold:
+                # Comparar contra cuando se REVISO por ultima vez, no contra
+                # la fecha de la barra mas reciente que ya se tiene -- si
+                # Alpaca todavia no publica una barra mas nueva (ej. D1 antes
+                # del cierre del mercado de hoy), esa fecha se queda fija, asi
+                # que comparar contra ella hacia que el simbolo pareciera
+                # "atrasado" en CADA tick (30s) hasta que aparece una barra
+                # nueva -- confirmado en vivo: los 13k simbolos de D1
+                # re-pidiendose a Alpaca en bucle continuo durante horas en
+                # vez de una vez al dia como pretendia el umbral.
+                if last_checked_at is None or now - last_checked_at >= threshold:
                     steady_state.append(row)
 
     if backfill:
